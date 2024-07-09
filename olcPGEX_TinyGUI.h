@@ -92,6 +92,9 @@ struct Rect {
     Rect Union(const Rect& other) const;
     Rect Intersection(const Rect& other) const;
 
+    int DistanceToRect(const Rect& other) const;
+
+    olc::vi2d Center() const { return { x + width / 2, y + height / 2 }; }
     olc::vi2d Position() const { return { x, y }; }
     olc::vi2d Size() const { return { width, height }; }
 };
@@ -212,6 +215,13 @@ public:
     Rect RectCutTop(int amount);
     Rect RectCutBottom(int amount);
 
+    void AddDockingArea(const Rect& rect);
+    void AddDockingAreaLeft(int size);
+    void AddDockingAreaRight(int size);
+    void AddDockingAreaTop(int size);
+    void AddDockingAreaBottom(int size);
+    void AddDockingAreaRemainingSpace();
+
     // ------- DRAWING -------
     olc::Pixel PixelBrightness(olc::Pixel color, float amount);
     std::pair<int, int> TextSize(const std::string& text);
@@ -251,7 +261,15 @@ private:
     void DrawStyleSprite(Rect bounds, olc::Pixel color, GuiMapSprite sprite);
     GuiMapSprite WidgetStateToSprite(WidgetState state);
 
+    bool CurrentFrameIsCollapsed();
+
+    void RenderAll();
+    void RenderDockingAreas();
+
     olc::Pixel GetBestForegroundColor(const std::optional<olc::Pixel>& bgColor = std::nullopt);
+
+    size_t NearestDockingArea(const Rect& bounds);
+    bool IsDockingAreaFree(size_t id);
 
     template <typename T>
     bool SliderImpl(
@@ -376,10 +394,6 @@ private:
         return changed;
     }
 
-    void RenderAll();
-
-    bool CurrentFrameIsCollapsed();
-
     struct Popup {
         std::string name;
         olc::vi2d position;
@@ -398,6 +412,8 @@ private:
         olc::vi2d positionOffset{ 0, 0 };
         bool collapsible, fixed;
         bool collapsed{ false }, dragging{ false };
+
+        size_t dockId{ 0 };
     };
 
     struct TabBarState {
@@ -427,6 +443,9 @@ private:
     // graphics/layout states
     std::vector<Rect> m_rectStack;
     std::map<size_t, std::unique_ptr<olc::Decal>> m_images;
+
+    // docking
+    std::map<size_t, Rect> m_dockingAreas;
 
     // --- DRAW COMMANDS ---
     std::unique_ptr<olc::Sprite> m_guiSprite;
@@ -469,9 +488,13 @@ private:
 
     void AddDrawCommand(DrawCommand cmd, size_t position = -1);
     void SetTargetLayer(uint32_t layer);
+
+    static size_t g_idCounter;
 };
 
 #ifdef OLC_PGEX_TINYGUI
+
+size_t olcPGEX_TinyGUI::g_idCounter = 100;
 
 void olcPGEX_TinyGUI::RenderAll() {
     std::vector<Rect> scissorStack;
@@ -534,6 +557,17 @@ void olcPGEX_TinyGUI::RenderAll() {
 	m_drawCommands.clear();
 }
 
+void olcPGEX_TinyGUI::RenderDockingAreas() {
+    for (const auto& [id, rect] : m_dockingAreas) {
+        if (!IsDockingAreaFree(id)) continue;
+        DrawStyle9Patch(
+            GuiMapSprite::Selection,
+            olc::Pixel(0, 0, 0, 100),
+            rect
+        );
+	}
+}
+
 bool olcPGEX_TinyGUI::CurrentFrameIsCollapsed() {
     if (m_state.ignoreCollapsed) return false;
     if (m_frameStack.empty()) return false;
@@ -573,6 +607,19 @@ Rect Rect::Intersection(const Rect& other) const {
     int x2 = std::min(x + width, other.x + other.width);
     int y2 = std::min(y + height, other.y + other.height);
     return { x1, y1, x2 - x1, y2 - y1 };
+}
+
+int Rect::DistanceToRect(const Rect& other) const {
+    //if (Intersects(other)) return 0;
+
+	int dx = 0, dy = 0;
+	if (x + width < other.x) dx = other.x - (x + width);
+	else if (x > other.x + other.width) dx = x - (other.x + other.width);
+
+	if (y + height < other.y) dy = other.y - (y + height);
+	else if (y > other.y + other.height) dy = y - (other.y + other.height);
+
+	return std::max(dx, dy);
 }
 
 bool Rect::HasPoint(int x, int y) const {
@@ -938,40 +985,31 @@ void olcPGEX_TinyGUI::Image(const std::string& name, Rect bounds, olc::Sprite* s
 void olcPGEX_TinyGUI::TabBar(const std::string& name, Rect bounds, std::string* tabs, size_t numTabs, size_t& selected) {
     if (CurrentFrameIsCollapsed()) return;
     
-    auto fg = GetBestForegroundColor();
-    auto wid = GetWidget(name, bounds);
+    const int nextButtonWidth = 16;
 
-    auto pos = m_tabBars.find(wid.id);
+    auto fg = GetBestForegroundColor();
+
+    auto id = std::hash<std::string>()(name);
+    auto pos = m_tabBars.find(id);
     if (pos == m_tabBars.end()) {
-		m_tabBars[wid.id] = TabBarState();
-		pos = m_tabBars.find(wid.id);
+		m_tabBars[id] = TabBarState();
+		pos = m_tabBars.find(id);
 	}
 
     auto& tabBar = pos->second;
 
     std::vector<Rect> tabBounds;
 
-    int offX = 3;
-    for (size_t i = 0; i < numTabs; i++) {
-        auto [tw, th] = TextSize(tabs[i]);
-        Rect tabRect{
-			bounds.x + offX,
-			bounds.y,
-			tw + 10,
-			bounds.height + 3
-		};
-        offX += tabRect.width - 3;
+    uint32_t startTab = tabBar.startIndex;
+    uint32_t numVisibleTabs = 0;
 
-        tabBounds.push_back(tabRect);
-	}
-
-    auto fnDrawTab = [&](size_t index, int offsetY) {
+    auto fnDrawTab = [&](Rect tabRect, size_t index, int offsetY) {
         auto [tw, th] = TextSize(tabs[index]);
-        Rect tabRect = tabBounds[index];
 
-        if (wid.state == WidgetState::Clicked && tabRect.HasPoint(m_state.mousePos)) {
-			selected = index;
-		}
+        auto wid = GetWidget(name + "_tab" + std::to_string(index), tabRect);
+        if (wid.state == WidgetState::Clicked) {
+            selected = index;
+        }
 
         tabRect.y += offsetY;
         tabRect.height -= offsetY;
@@ -994,14 +1032,71 @@ void olcPGEX_TinyGUI::TabBar(const std::string& name, Rect bounds, std::string* 
         );
     };
 
-    // draw everything except the selected tab
-    for (size_t i = 0; i < numTabs; i++) {
-        if (i == selected) continue;
-        fnDrawTab(i, 4);
-    }
+    Rect selectedTabRect{};
+    int offX = 3;
+    for (size_t i = tabBar.startIndex; i < numTabs; i++) {
+        auto [tw, th] = TextSize(tabs[i]);
+        Rect tabRect{
+			bounds.x + offX,
+			bounds.y,
+			tw + 10,
+			bounds.height + 3
+		};
+
+        if (offX + tabRect.width > bounds.width - nextButtonWidth * 2)
+			break;
+
+        offX += tabRect.width - 3;
+
+        // draw except selected
+        if (i == selected) {
+            selectedTabRect = tabRect;
+        } else fnDrawTab(tabRect, i, 4);
+
+        numVisibleTabs++;
+	}
 
     // draw selected tab
-    fnDrawTab(selected, 0);
+    if (selected >= tabBar.startIndex && selected < tabBar.startIndex + numVisibleTabs)
+        fnDrawTab(selectedTabRect, selected, 0);
+
+    if (numVisibleTabs < numTabs) {
+		// draw next button
+		Rect nextButton{
+			bounds.x + bounds.width - nextButtonWidth,
+			bounds.y + 4,
+			nextButtonWidth,
+			bounds.height - 4
+		};
+
+		if (Button(name + "_next", nextButton, "")) {
+			tabBar.startIndex++;
+			tabBar.startIndex = std::clamp(tabBar.startIndex, uint32_t(0), uint32_t(numTabs) - numVisibleTabs);
+		}
+        DrawStyleSprite(
+            GuiMapSprite::ArrowRight,
+            GetBestForegroundColor(),
+            Rect{ nextButton.x + nextButton.width / 2 - 4, nextButton.y + nextButton.height / 2 - 4 + 1, 8, 8 }
+        );
+
+		// draw prev button
+		Rect prevButton{
+			bounds.x + bounds.width - nextButtonWidth * 2,
+			bounds.y + 4,
+			nextButtonWidth,
+			bounds.height - 4
+		};
+
+		if (Button(name + "_prev", prevButton, "")) {
+			tabBar.startIndex--;
+			tabBar.startIndex = std::clamp(tabBar.startIndex, uint32_t(0), uint32_t(numTabs) - numVisibleTabs);
+		}
+        DrawStyleSprite(
+			GuiMapSprite::ArrowLeft,
+			GetBestForegroundColor(),
+			Rect{ prevButton.x + prevButton.width / 2 - 4, prevButton.y + prevButton.height / 2 - 4 + 1, 8, 8 }
+		);
+	}
 
     DrawLine(olc::BLACK, { bounds.x, bounds.y + bounds.height }, { bounds.x + bounds.width, bounds.y + bounds.height });
 }
@@ -1097,7 +1192,7 @@ void olcPGEX_TinyGUI::ShowPopup(const std::string& name) {
 }
 
 void olcPGEX_TinyGUI::OnBeforeUserCreate() {
-    glEnable(GL_SCISSOR_TEST);
+    m_rectStack.push_back(Rect{ 0, 0, pge->ScreenWidth(), pge->ScreenHeight() });
 
     m_panelsLayer = pge->CreateLayer();
     pge->EnableLayer(m_panelsLayer, true);
@@ -1139,7 +1234,9 @@ bool olcPGEX_TinyGUI::OnBeforeUserUpdate(float& fElapsedTime) {
     m_state.mouseDelta = pge->GetMousePos() - m_state.mousePos;
 	m_state.mousePos = pge->GetMousePos();
 
-    m_rectStack.push_back(Rect{ 0, 0, pge->ScreenWidth(), pge->ScreenHeight() });
+    if (m_rectStack.empty())
+        m_rectStack.push_back(Rect{ 0, 0, pge->ScreenWidth(), pge->ScreenHeight() });
+
     if (!m_state.mouseDown) m_state.hoveredId = 0;
 
     for (auto&& [wid, widget] : m_widgets) {
@@ -1159,6 +1256,8 @@ bool olcPGEX_TinyGUI::OnBeforeUserUpdate(float& fElapsedTime) {
     pge->Clear(olc::BLANK);
 
     SetTargetLayer(m_widgetsLayer);
+
+    RenderDockingAreas();
 
 	return false;
 }
@@ -1187,6 +1286,7 @@ void olcPGEX_TinyGUI::OnAfterUserUpdate(float fElapsedTime) {
                 m_state.activeId = fid;
                 m_state.frontMostPanelId = fid;
                 frame.dragging = true;
+                frame.dockId = 0;
                 m_state.clickedFrame = &frame;
                 break;
             }
@@ -1194,10 +1294,35 @@ void olcPGEX_TinyGUI::OnAfterUserUpdate(float fElapsedTime) {
 
         if (m_state.clickedFrame && !m_state.mouseDown) {
             m_state.activeId = 0;
+
+            // docking logic
+            auto dockId = NearestDockingArea(m_state.clickedFrame->bounds);
+            if (dockId != size_t(-1) && IsDockingAreaFree(dockId)) {
+                Rect dockRect = m_dockingAreas[dockId];
+                m_state.clickedFrame->positionOffset.x = dockRect.x;
+                m_state.clickedFrame->positionOffset.y = dockRect.y;
+                m_state.clickedFrame->bounds.width = dockRect.width;
+                m_state.clickedFrame->bounds.height = dockRect.height;
+				m_state.clickedFrame->dockId = dockId;
+            }
+
             m_state.clickedFrame->dragging = false;
             m_state.clickedFrame = nullptr;
 		}
     }
+
+    // docking highlight
+    if (m_state.clickedFrame) {
+        auto dockId = NearestDockingArea(m_state.clickedFrame->bounds);
+        if (dockId != size_t(-1) && IsDockingAreaFree(dockId)) {
+            DrawStyle9Patch(
+                GuiMapSprite::Selection,
+                olc::Pixel(18, 101, 255, 160),
+                m_dockingAreas[dockId]
+            );
+        }
+    }
+
     //////
 
     RenderAll();
@@ -1242,20 +1367,26 @@ void olcPGEX_TinyGUI::BeginFrame(
     fram.fixed = fixed;
 
     auto [tw, th] = TextSize(title);
-    // Rect rect = PeekRect();
+
     fram.bounds = Rect{ fram.positionOffset.x, fram.positionOffset.y, width, padding + FrameTitleHeight };
+    if (fram.dockId != 0) {
+        Rect dockRect = m_dockingAreas[fram.dockId];
+        fram.bounds.width = dockRect.width;
+        fram.bounds.height = dockRect.height;
+    }
+
     fram.titleBounds = Rect{ fram.bounds.x + 2, fram.bounds.y + 2, fram.bounds.width - 4, FrameTitleHeight };
 
     // adjust title bounds to exclude the collapse button
-    if (fram.collapsible) {
+    if (fram.collapsible && fram.dockId == 0) {
         fram.titleBounds.width -= FrameTitleHeight;
     }
 
     m_frameStack.push_back(fid);
 
     Rect widgetsRect = fram.bounds.Expand(-padding);
-    widgetsRect.y += fram.bounds.height - padding;
-    widgetsRect.height -= fram.bounds.height;
+    widgetsRect.y += fram.titleBounds.height;
+    widgetsRect.height -= fram.titleBounds.height;
     PushRect(widgetsRect);
 
     if (m_state.frontMostPanelId == fid) SetTargetLayer(m_panelsLayer);
@@ -1276,14 +1407,17 @@ Rect olcPGEX_TinyGUI::EndFrame() {
     Rect frameBounds = frame.bounds;
     Rect titleBounds = frame.titleBounds;
 
-    auto [tw, th] = TextSize(frame.title);
-    frameBounds.height += PeekRect().y - frameBounds.y;
-    frameBounds.height -= FrameTitleHeight;
+    bool docked = frame.dockId != 0;
+    if (!docked) {
+        frameBounds.height += PeekRect().y - frameBounds.y;
+        frameBounds.height -= FrameTitleHeight;
+    }
 
-    if (frame.collapsed) {
+    if (frame.collapsed && !docked) {
         frameBounds.height = FrameTitleHeight + padding;
     }
 
+    auto [tw, th] = TextSize(frame.title);
     DrawText(
         frame.title, light,
         Rect{ frameBounds.x + 6, frameBounds.y + 2 + (FrameTitleHeight / 2 - th / 2), frameBounds.width - 4, FrameTitleHeight },
@@ -1312,7 +1446,7 @@ Rect olcPGEX_TinyGUI::EndFrame() {
         frame.insertId
     );
 
-    if (frame.collapsible) {
+    if (frame.collapsible && !docked) {
         m_state.ignoreCollapsed = true;
         Rect collapseButtonBounds = Rect{
             frameBounds.x + frameBounds.width - FrameTitleHeight - 1,
@@ -1394,6 +1528,38 @@ Rect olcPGEX_TinyGUI::RectCutBottom(int amount) {
 	Rect rec{ orig.x, orig.y + orig.height - amount, orig.width, amount };
 	orig.height -= amount;
 	return rec;
+}
+
+void olcPGEX_TinyGUI::AddDockingArea(const Rect& rect) {
+    m_dockingAreas[g_idCounter++] = rect;
+}
+
+void olcPGEX_TinyGUI::AddDockingAreaLeft(int size) {
+    PushRect(RectCutLeft(size));
+    AddDockingArea(PeekRect());
+    PopRect();
+}
+
+void olcPGEX_TinyGUI::AddDockingAreaRight(int size) {
+    PushRect(RectCutRight(size));
+	AddDockingArea(PeekRect());
+	PopRect();
+}
+
+void olcPGEX_TinyGUI::AddDockingAreaTop(int size) {
+    PushRect(RectCutTop(size));
+	AddDockingArea(PeekRect());
+	PopRect();
+}
+
+void olcPGEX_TinyGUI::AddDockingAreaBottom(int size) {
+    PushRect(RectCutBottom(size));
+	AddDockingArea(PeekRect());
+	PopRect();
+}
+
+void olcPGEX_TinyGUI::AddDockingAreaRemainingSpace() {
+    AddDockingArea(PeekRect());
 }
 
 olcPGEX_TinyGUI::Widget& olcPGEX_TinyGUI::GetWidget(const std::string& name, Rect bounds, bool blockInputByPopup) {
@@ -1686,6 +1852,29 @@ GuiMapSprite olcPGEX_TinyGUI::WidgetStateToSprite(WidgetState state) {
 olc::Pixel olcPGEX_TinyGUI::GetBestForegroundColor(const std::optional<olc::Pixel>& bgColor) {
     olc::Pixel bg = bgColor.value_or(baseColor);
     return utils::Luma(bg) > 0.5f ? olc::BLACK : olc::WHITE;
+}
+
+size_t olcPGEX_TinyGUI::NearestDockingArea(const Rect& bounds) {
+    const int distanceTolerancePx = 1;
+
+    int distance = INT_MAX;
+    size_t dockId = size_t(-1);
+    for (auto [id, area] : m_dockingAreas) {
+        int dist = area.DistanceToRect(bounds);
+        if (dist < distance && dist < distanceTolerancePx) {
+			distance = dist;
+            dockId = id;
+        }
+    }
+
+    return dockId;
+}
+
+bool olcPGEX_TinyGUI::IsDockingAreaFree(size_t id) {
+    for (auto&& [fid, frame] : m_frames) {
+        if (frame.dockId == id) return false;
+    }
+    return true;
 }
 
 void olcPGEX_TinyGUI::AddDrawCommand(DrawCommand cmd, size_t position) {

@@ -20,12 +20,15 @@ public:
 	bool OnUserCreate() override
 	{
 		gui.baseColor = olc::Pixel(255, 255, 255);
+
+		gui.AddDockingAreaRight(200);
+
 		return true;
 	}
 
 	bool OnUserUpdate(float fElapsedTime) override
 	{
-		Clear(olc::Pixel(0, 80, 180));
+		Clear(olc::Pixel(0, 60, 150));
 
 		gui.PushRect(gui.PeekRect().Expand(-5));
 		gui.PushRect(gui.RectCutLeft(120));
@@ -69,11 +72,11 @@ public:
 
 		gui.PopRect();
 
-		std::string tabs[] = { "Tab 1", "Tab 2", "Tab 3" };
+		std::string tabs[] = { "Tab 1", "Tab 2", "Tab 3", "Tab Long 5", "Tab Long 6" };
 
 		// Frame
 		gui.BeginFrame("frame1", "Frame Test", { 20, 120 }, 200, true);
-		gui.TabBar("tab1", gui.RectCutTop(25), tabs, 3, selTab);
+		gui.TabBar("tab1", gui.RectCutTop(25), tabs, 5, selTab);
 
 		gui.RectCutTop(3);
 
