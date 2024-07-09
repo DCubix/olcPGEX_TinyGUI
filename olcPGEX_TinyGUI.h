@@ -30,6 +30,8 @@ namespace utils {
 
     std::vector<std::string> Split(const std::string& str, const std::string& delimiter);
     std::vector<std::string> Split(const std::string& str, const std::initializer_list<std::string>& delimiters);
+
+    size_t GetIDFromName(const std::string& name);
 }
 
 #pragma region Hardcoded Data
@@ -38,6 +40,7 @@ constexpr uint8_t GuiMapWidth = 128;
 constexpr uint8_t GuiMapHeight = 8;
 constexpr uint16_t GuiMapDataLength = 3072;
 constexpr uint16_t GuiMapAlphaChannelStart = GuiMapWidth * GuiMapHeight * 2u;
+
 constexpr uint8_t GuiMap[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x86, 0x31, 0x86, 0x31, 0x86, 0x31, 0x86, 0x31, 0x86, 0x31, 0x86, 0x31, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0xff, 0xff,
     0x00, 0x00, 0xff, 0xff, 0x3c, 0xe7, 0x3c, 0xe7, 0x3c, 0xe7, 0x3c, 0xe7, 0xec, 0x62, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0x9e, 0xf7, 0x9e, 0xf7, 0x9e, 0xf7, 0x9e, 0xf7, 0x92, 0x94, 0x00, 0x00, 0x00, 0x00, 0xa2, 0x10, 0xa2, 0x10, 0xa2, 0x10, 0xa2, 0x10, 0xa2, 0x10, 0x25, 0x29, 0x00, 0x00, 0x00, 0x00, 0x86, 0x31, 0x86, 0x31, 0x86, 0x31, 0x86, 0x31, 0x86, 0x31, 0xec, 0x62, 0x00, 0x00, 0x00, 0x00, 0x75, 0xad, 0x75, 0xad, 0x75, 0xad, 0x75, 0xad, 0x75, 0xad, 0x75, 0xad, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x3c, 0xe7, 0x3c, 0xe7, 0x3c, 0xe7, 0x3c, 0xe7, 0x3c, 0xe7, 0x3c, 0xe7, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00,
@@ -215,12 +218,12 @@ public:
     Rect RectCutTop(int amount);
     Rect RectCutBottom(int amount);
 
-    void AddDockingArea(const Rect& rect);
-    void AddDockingAreaLeft(int size);
-    void AddDockingAreaRight(int size);
-    void AddDockingAreaTop(int size);
-    void AddDockingAreaBottom(int size);
-    void AddDockingAreaRemainingSpace();
+    void AddDockingArea(const std::string& name, const Rect& rect);
+    void AddDockingAreaLeft(const std::string& name, int size);
+    void AddDockingAreaRight(const std::string& name, int size);
+    void AddDockingAreaTop(const std::string& name, int size);
+    void AddDockingAreaBottom(const std::string& name, int size);
+    void AddDockingAreaRemainingSpace(const std::string& name);
 
     // ------- DRAWING -------
     olc::Pixel PixelBrightness(olc::Pixel color, float amount);
@@ -488,13 +491,9 @@ private:
 
     void AddDrawCommand(DrawCommand cmd, size_t position = -1);
     void SetTargetLayer(uint32_t layer);
-
-    static size_t g_idCounter;
 };
 
 #ifdef OLC_PGEX_TINYGUI
-
-size_t olcPGEX_TinyGUI::g_idCounter = 100;
 
 void olcPGEX_TinyGUI::RenderAll() {
     std::vector<Rect> scissorStack;
@@ -562,7 +561,7 @@ void olcPGEX_TinyGUI::RenderDockingAreas() {
         if (!IsDockingAreaFree(id)) continue;
         DrawStyle9Patch(
             GuiMapSprite::Selection,
-            olc::Pixel(0, 0, 0, 100),
+            olc::Pixel(0, 0, 0, 110),
             rect
         );
 	}
@@ -1331,6 +1330,7 @@ void olcPGEX_TinyGUI::OnAfterUserUpdate(float fElapsedTime) {
     if (!m_state.mouseDown) {
         m_state.activeId = 0;
     }
+
     m_rectStack.clear();
 
     m_state.blinkTimer += fElapsedTime;
@@ -1530,36 +1530,36 @@ Rect olcPGEX_TinyGUI::RectCutBottom(int amount) {
 	return rec;
 }
 
-void olcPGEX_TinyGUI::AddDockingArea(const Rect& rect) {
-    m_dockingAreas[g_idCounter++] = rect;
+void olcPGEX_TinyGUI::AddDockingArea(const std::string& name, const Rect& rect) {
+    m_dockingAreas[utils::GetIDFromName(name)] = rect;
 }
 
-void olcPGEX_TinyGUI::AddDockingAreaLeft(int size) {
+void olcPGEX_TinyGUI::AddDockingAreaLeft(const std::string& name, int size) {
     PushRect(RectCutLeft(size));
-    AddDockingArea(PeekRect());
+    AddDockingArea(name, PeekRect());
     PopRect();
 }
 
-void olcPGEX_TinyGUI::AddDockingAreaRight(int size) {
+void olcPGEX_TinyGUI::AddDockingAreaRight(const std::string& name, int size) {
     PushRect(RectCutRight(size));
-	AddDockingArea(PeekRect());
+	AddDockingArea(name, PeekRect());
 	PopRect();
 }
 
-void olcPGEX_TinyGUI::AddDockingAreaTop(int size) {
+void olcPGEX_TinyGUI::AddDockingAreaTop(const std::string& name, int size) {
     PushRect(RectCutTop(size));
-	AddDockingArea(PeekRect());
+	AddDockingArea(name, PeekRect());
 	PopRect();
 }
 
-void olcPGEX_TinyGUI::AddDockingAreaBottom(int size) {
+void olcPGEX_TinyGUI::AddDockingAreaBottom(const std::string& name, int size) {
     PushRect(RectCutBottom(size));
-	AddDockingArea(PeekRect());
+	AddDockingArea(name, PeekRect());
 	PopRect();
 }
 
-void olcPGEX_TinyGUI::AddDockingAreaRemainingSpace() {
-    AddDockingArea(PeekRect());
+void olcPGEX_TinyGUI::AddDockingAreaRemainingSpace(const std::string& name) {
+    AddDockingArea(name, PeekRect());
 }
 
 olcPGEX_TinyGUI::Widget& olcPGEX_TinyGUI::GetWidget(const std::string& name, Rect bounds, bool blockInputByPopup) {
@@ -1892,7 +1892,8 @@ void olcPGEX_TinyGUI::SetTargetLayer(uint32_t layer) {
 }
 
 void olcPGEX_TinyGUI::DrawPopups() {
-    auto& pge = olc::PGEX::pge;
+    const int paddingX = 8;
+    const int paddingY = 5;
 
     pge->SetDrawTarget(nullptr);
 
@@ -1902,7 +1903,9 @@ void olcPGEX_TinyGUI::DrawPopups() {
         int width = 0, height = 0;
         for (size_t i = 0; i < popup.items.size(); i++) {
             auto item = popup.items[i];
-            width = std::max(width, TextSize(item).first);
+            auto [tw, th] = TextSize(item);
+
+            width = std::max(width, tw);
 
             if (item.find_first_not_of('-') == std::string::npos) {
                 height += PopupItemHeight / 2;
@@ -1912,39 +1915,41 @@ void olcPGEX_TinyGUI::DrawPopups() {
             }
         }
 
-        Rect bounds{ popup.position.x, popup.position.y, width + 6, height + 4 };
+        Rect bounds{ popup.position.x, popup.position.y, width + paddingX * 2, height + paddingY * 2 };
 
-        pge->FillRectDecal(
-            olc::vi2d{ bounds.x + 1, bounds.y + 1 },
-            olc::vi2d{ bounds.width, bounds.height },
-            PixelBrightness(baseColor, 0.7f)
+        DrawStyle9Patch(
+            Rect{ bounds.x + 3, bounds.y + 3, bounds.width, bounds.height },
+            olc::WHITE,
+            GuiMapSprite::Shadow,
+            0xFF
         );
-        pge->FillRectDecal(
-            olc::vi2d{ bounds.x, bounds.y },
-            olc::vi2d{ bounds.width, bounds.height },
-            PixelBrightness(baseColor, 1.3f)
+        DrawStyle9Patch(
+            bounds,
+            olc::WHITE,
+            GuiMapSprite::Panel,
+            0xFF
         );
 
         const auto light = PixelBrightness(baseColor, 2.5f);
         const auto dark = PixelBrightness(baseColor, 0.15f);
 
-        int y = bounds.y + 2;
+        int y = bounds.y + paddingY;
         for (size_t i = 0; i < popup.items.size(); i++) {
             auto item = popup.items[i];
 
             if (item.find_first_not_of('-') == std::string::npos) {
                 pge->DrawLineDecal(
-                    olc::vf2d{ float(bounds.x), float(y + PopupItemHeight / 4) },
-                    olc::vf2d{ float(bounds.x + bounds.width), float(y + PopupItemHeight / 4) },
+                    olc::vf2d{ float(bounds.x + 3), float(y + PopupItemHeight / 4) },
+                    olc::vf2d{ float(bounds.x + bounds.width - 3), float(y + PopupItemHeight / 4) },
                     PixelBrightness(baseColor, 0.5f)
                 );
                 y += PopupItemHeight / 2;
                 continue;
             }
 
-            auto wd = GetWidgetByName(item + popup.name);
             Rect wdBounds{ bounds.x, y, bounds.width, PopupItemHeight };
-
+            auto wd = GetWidgetByName(item + popup.name);
+            
             olc::Pixel fgColor = dark;
             switch (wd.state) {
                 case WidgetState::Hovered:
@@ -1962,7 +1967,7 @@ void olcPGEX_TinyGUI::DrawPopups() {
 
             auto [tw, th] = TextSize(item);
             pge->DrawStringPropDecal(
-				{ float(bounds.x + 2), float(y + PopupItemHeight / 2 - th / 2) },
+				{ float(bounds.x + paddingX), float(y + PopupItemHeight / 2 - th / 2) },
 				item,
 				fgColor
 			);
@@ -1997,6 +2002,10 @@ std::vector<std::string> utils::Split(const std::string& str, const std::initial
 	}
 	tokens.push_back(original);
 	return tokens;
+}
+
+size_t utils::GetIDFromName(const std::string& name) {
+    return std::hash<std::string>()(name);
 }
 
 #endif

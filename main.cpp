@@ -1,4 +1,5 @@
 #define OLC_PGE_APPLICATION
+#define OLC_GFX_OPENGL33
 #include "olcPixelGameEngine.h"
 
 #define OLC_PGEX_TINYGUI
@@ -21,21 +22,21 @@ public:
 	{
 		gui.baseColor = olc::Pixel(255, 255, 255);
 
-		gui.AddDockingAreaRight(200);
-
 		return true;
 	}
 
 	bool OnUserUpdate(float fElapsedTime) override
 	{
-		Clear(olc::Pixel(0, 60, 150));
+		Clear(gui.PixelBrightness(gui.baseColor, 0.8f));
+
+		gui.AddDockingAreaRight("toolbox", 200);
 
 		gui.PushRect(gui.PeekRect().Expand(-5));
 		gui.PushRect(gui.RectCutLeft(120));
 
 		// Button
 		if (gui.Button("btn1", gui.RectCutTop(22), "Button 1")) {
-
+			gui.ShowPopup("popup1");
 		}
 
 		// Toggle
@@ -127,6 +128,16 @@ public:
 		gui.PopRect();
 
 		gui.EndFrame();
+
+		std::string menuItems[] = {
+			"Menu Item 1",
+			"Menu Item 2",
+			"Menu Item 3",
+			"Menu Item 4",
+			"---",
+			"Menu Item 5"
+		};
+		gui.MakePopup("popup1", menuItems, 6);
 
 		return true;
 	}
