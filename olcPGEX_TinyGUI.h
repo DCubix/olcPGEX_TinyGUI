@@ -1,11 +1,22 @@
 #pragma once
 
+#ifndef OLC_PGE_APPLICATION // Use OpenGL backend
+// disable min/max macros
+#define NOMINMAX
+#include "glbind.h"
+#include "stb_image.h"
+#include "stb_truetype.h"
+#include <iostream>
+#include <fstream>
+#else // Use PixelGameEngine backend
 #include "olcPixelGameEngine.h"
+#endif
 
 #include <optional>
 #include <functional>
 #include <algorithm>
 #include <vector>
+#include <string>
 #include <initializer_list>
 #include <map>
 
@@ -16,23 +27,6 @@
 #ifdef None
 #undef None
 #endif
-
-namespace utils {
-    template <typename... Args>
-    std::string StringFormat(const std::string& format, Args... args) {
-        size_t size = std::snprintf(nullptr, 0, format.c_str(), args...) + 1;
-        std::string result(size, '\0');
-        std::snprintf(result.data(), size, format.c_str(), args...);
-        return result.substr(0, size - 1);
-    }
-
-    float Luma(const olc::Pixel& color);
-
-    std::vector<std::string> Split(const std::string& str, const std::string& delimiter);
-    std::vector<std::string> Split(const std::string& str, const std::initializer_list<std::string>& delimiters);
-
-    size_t GetIDFromName(const std::string& name);
-}
 
 #pragma region Hardcoded Data
 // RGB565A8
@@ -84,11 +78,38 @@ constexpr int PopupItemHeight = 20;
 constexpr int FrameTitleHeight = 18;
 #pragma endregion
 
+struct Color {
+    uint8_t r, g, b, a;
+
+    static Color FromFloat(float r, float g, float b, float a = 1.0f) {
+		return {
+            static_cast<uint8_t>(r * 255),
+            static_cast<uint8_t>(g * 255),
+            static_cast<uint8_t>(b * 255),
+            static_cast<uint8_t>(a * 255)
+        };
+	}
+};
+
+template <typename T>
+concept IsNumber = std::is_integral_v<T> || std::is_floating_point_v<T>;
+
+template <typename T> requires IsNumber<T>
+struct Vector2 {
+    T x, y;
+
+    std::pair<T, T> AsPair() const { return { x, y }; }
+};
+
+using Vector2i = Vector2<int32_t>;
+using Vector2ui = Vector2<uint32_t>;
+using Vector2f = Vector2<float>;
+
 struct Rect {
     int x, y, width, height;
 
     bool HasPoint(int x, int y) const;
-    bool HasPoint(const olc::vi2d& pos) const;
+    bool HasPoint(const Vector2i& pos) const;
     Rect Expand(int amount = 1);
 
     bool Intersects(const Rect& other) const;
@@ -97,9 +118,210 @@ struct Rect {
 
     int DistanceToRect(const Rect& other) const;
 
-    olc::vi2d Center() const { return { x + width / 2, y + height / 2 }; }
-    olc::vi2d Position() const { return { x, y }; }
-    olc::vi2d Size() const { return { width, height }; }
+    Vector2i Center() const { return { x + width / 2, y + height / 2 }; }
+    Vector2i Position() const { return { x, y }; }
+    Vector2i Size() const { return { width, height }; }
+};
+
+class Texture {
+public:
+    void Load(const std::string& filename);
+    void LoadFromMemory(uint8_t* data, uint32_t width, uint32_t height, uint32_t channels);
+
+    Vector2ui Size() const { return { m_width, m_height }; }
+
+#ifdef OLC_PGE_APPLICATION
+    olc::Sprite* GetSprite() { return m_sprite.get(); }
+	olc::Decal* GetDecal() { return m_decal.get(); }
+#else
+	GLuint GetID() const { return m_id; }
+#endif
+
+private:
+    uint32_t m_width, m_height;
+
+#ifdef OLC_PGE_APPLICATION
+    std::unique_ptr<olc::Sprite> m_sprite;
+    std::unique_ptr<olc::Decal> m_decal;
+#else
+    GLuint m_id;
+#endif
+};
+
+class Shader;
+class Font;
+class RendererBackend {
+public:
+    virtual void DrawQuad(const Rect& bounds, const Color& color, Texture* texture) = 0;
+    virtual void DrawPartialQuad(const Rect& dest, const Rect& src, const Color& color, Texture* texture) = 0;
+    virtual void DrawLine(Vector2i a, Vector2i b, const Color& color) = 0;
+    virtual void EnableScissor(const Rect& bounds) = 0;
+    virtual void DisableScissor() = 0;
+    virtual void Render(Shader* shader, Vector2ui screenSize) = 0;
+    virtual Vector2i GetTextSize(Font* font, const std::string& text) = 0;
+
+    virtual void SetDrawTarget(size_t index) {}
+};
+
+#ifndef OLC_PGE_APPLICATION
+class Shader {
+public:
+    enum class Type {
+		Vertex = GL_VERTEX_SHADER,
+		Fragment = GL_FRAGMENT_SHADER
+    };
+
+    Shader& AddSource(Type type, const std::string& source);
+    void Link();
+
+    void Use() const;
+
+    void SetUniform(const std::string& name, int value);
+    void SetUniform(const std::string& name, float value);
+    void SetUniform(const std::string& name, const Vector2f& value);
+    void SetUniform(const std::string& name, const Color& value);
+    void SetUniform(const std::string& name, float* matrix, bool transpose = false);
+private:
+    std::vector<GLint> m_shaders;
+    std::map<std::string, GLint> m_uniforms;
+
+    GLuint m_id;
+
+    GLint GetUniformLocation(const std::string& name);
+};
+
+class BatchedRenderer : public RendererBackend {
+public:
+    BatchedRenderer();
+
+    void DrawQuad(const Rect& bounds, const Color& color, Texture* texture) override;
+    void DrawPartialQuad(const Rect& dest, const Rect& src, const Color& color, Texture* texture) override;
+    void DrawLine(Vector2i a, Vector2i b, const Color& color) override;
+    void EnableScissor(const Rect& bounds) override;
+    void DisableScissor() override;
+
+    void DrawPartialQuadUV(const Rect& dest, float* uvs, const Color& color, Texture* texture);
+    void DrawChar(Font* font, const Vector2f& pos, char c, Color color);
+    void DrawText(Font* font, const Vector2f& pos, const std::string& text, Color color);
+
+    Vector2i GetTextSize(Font* font, const std::string& text) override;
+
+    void Render(Shader* shader, Vector2ui screenSize) override;
+private:
+    struct Vertex {
+        Vector2f pos;
+        float color[4];
+		Vector2f uv;
+    };
+
+    struct Batch {
+        uint32_t offset, count;
+        Texture* texture;
+        Rect scissor;
+
+        enum Type {
+            TypeQuad = 0,
+            TypeLine,
+            TypeScissor
+        } type;
+    };
+
+    std::vector<Batch> m_batches;
+    std::vector<Vertex> m_vertices;
+
+    GLuint m_vao, m_vbo;
+    uint32_t m_vertexCount{ 0 };
+
+    void UpdateBuffers();
+    bool IsPreviousBatchIsCompatible(Batch::Type type, Texture* texture);
+    Batch* GetLastBatch();
+    Batch* GetNewBatch(Batch::Type type, uint32_t count, Texture* texture);
+};
+
+class Font {
+public:
+    void Load(const std::string& filename, float size);
+
+    Texture& GetTexture() { return m_texture; }
+    stbtt_packedchar GetPackedChar(char c) { return m_chars[c - 32]; }
+
+    int GetLineHeight() const { return m_lineHeight; }
+    int GetAscent() const { return m_ascent; }
+    int GetBaseline() const { return m_baseline; }
+
+private:
+    stbtt_packedchar m_chars[96];
+    stbtt_fontinfo m_fontInfo;
+
+    int m_ascent, m_baseline, m_lineHeight;
+    float m_scale;
+
+    Texture m_texture;
+};
+#endif
+
+class Renderer {
+public:
+    Renderer();
+
+    void DrawText(const std::string& text, Color color, Rect bounds, uint32_t layer, size_t position = -1);
+    void DrawFillRect(Color color, Rect bounds, uint32_t layer, size_t position = -1);
+    void DrawLine(Color color, Vector2i a, Vector2i b, uint32_t layer, size_t position = -1);
+    void DrawStyleSprite(GuiMapSprite sprite, Color color, Rect bounds, uint32_t layer, size_t position = -1);
+    void DrawStyle9Patch(GuiMapSprite sprite, Color color, Rect bounds, uint32_t layer, uint8_t flags = 0xFF, size_t position = -1);
+    void DrawImage(Texture* image, Rect bounds, uint32_t layer, size_t position = -1);
+    void EnableClip(Rect bounds, uint32_t layer);
+    void DisableClip();
+
+    // Raw drawing
+    void DrawStyle9Patch(Rect bounds, Color color, GuiMapSprite sprite, uint8_t flags);
+    void DrawStyleSprite(Rect bounds, Color color, GuiMapSprite sprite);
+
+    Vector2ui GetScreenSize() const;
+    void SetScreenSize(Vector2ui size);
+
+    Vector2i GetTextSize(const std::string& text);
+    size_t GetDrawCommandCount() const { return m_drawCommands.size(); }
+
+    void RenderAll();
+private:
+    enum class DrawCommandType {
+        Text,
+        FillRect,
+        Line,
+        StyleSprite,
+        Style9Patch,
+        Image,
+        EnableClip,
+        DisableClip
+    };
+
+    struct DrawCommand {
+        DrawCommandType type;
+        std::string text;
+        Color color;
+        Rect bounds;
+        Texture* image;
+        GuiMapSprite sprite;
+        uint8_t ninePatchFlags{ 0xFF };
+        uint32_t targetLayer{ 0 };
+    };
+
+    std::vector<DrawCommand> m_drawCommands;
+    std::map<size_t, Texture> m_textures;
+
+    Texture m_guiTexture;
+
+#ifndef OLC_PGE_APPLICATION
+    std::unique_ptr<RendererBackend> m_backend;
+    Shader m_shader;
+    Vector2ui m_screenSize;
+    Font m_font;
+#endif
+
+    void AddDrawCommand(DrawCommand cmd, uint32_t layer, size_t position = -1);
+
+    void LoadGuiTexture();
 };
 
 enum Alignment {
@@ -113,7 +335,24 @@ enum Alignment {
     AlignBottom = 32
 };
 
-class olcPGEX_TinyGUI : olc::PGEX {
+namespace utils {
+    template <typename... Args>
+    std::string StringFormat(const std::string& format, Args... args) {
+        size_t size = std::snprintf(nullptr, 0, format.c_str(), args...) + 1;
+        std::string result(size, '\0');
+        std::snprintf(result.data(), size, format.c_str(), args...);
+        return result.substr(0, size - 1);
+    }
+
+    float Luma(const Color& color);
+
+    std::vector<std::string> Split(const std::string& str, const std::string& delimiter);
+    std::vector<std::string> Split(const std::string& str, const std::initializer_list<std::string>& delimiters);
+
+    size_t GetIDFromName(const std::string& name);
+}
+
+class TinyGUI {
 public:
     enum class WidgetState {
         Idle = 0,
@@ -128,34 +367,32 @@ public:
         bool pressed{ false }, released{ false }, visible{ true };
     };
 
-    olcPGEX_TinyGUI() : olc::PGEX(true) {}
-
     // ------- WIDGETS -------
     Widget& GetWidget(const std::string& name, Rect bounds, bool blockInputByPopup = true);
     void Label(
         Rect bounds,
         const std::string& text,
         int alignment = (Alignment::AlignLeft | Alignment::AlignTop),
-        const std::optional<olc::Pixel>& bg = std::nullopt,
+        const std::optional<Color>& bg = std::nullopt,
         bool wordWrap = false
     );
     bool Button(
         const std::string& name,
         Rect bounds,
         const std::string& text,
-        const std::optional<olc::Pixel>& color = std::nullopt
+        const std::optional<Color>& color = std::nullopt
     );
     bool Slider(
         const std::string& name,
         Rect bounds,
         int& value, int min = 0, int max = 100, int step = 1,
-        const std::optional<olc::Pixel>& bg = std::nullopt
+        const std::optional<Color>& bg = std::nullopt
     );
     bool SliderF(
 		const std::string& name,
 		Rect bounds,
 		float& value, float min = 0.0f, float max = 1.0f, float step = 0.01f,
-		const std::optional<olc::Pixel>& bg = std::nullopt
+		const std::optional<Color>& bg = std::nullopt
 	);
     bool Toggle(const std::string& name, Rect bounds, const std::string& text, bool& value);
     bool Spinner(
@@ -163,24 +400,24 @@ public:
         Rect bounds,
         int& value, int min = 0, int max = 100, int step = 1,
         const std::string& fmt = "%d",
-        const std::optional<olc::Pixel>& bg = std::nullopt
+        const std::optional<Color>& bg = std::nullopt
     );
     bool SpinnerF(
         const std::string& name,
 		Rect bounds,
 		float& value, float min = 0.0f, float max = 1.0f, float step = 0.01f,
 		const std::string& fmt = "%.2f",
-        const std::optional<olc::Pixel>& bg = std::nullopt
+        const std::optional<Color>& bg = std::nullopt
     );
     bool EditBox(const std::string& name, Rect bounds, std::string& text);
-    void Image(const std::string& name, Rect bounds, olc::Sprite* sprite);
+    void Image(const std::string& name, Rect bounds, Texture* texture);
 
     void TabBar(const std::string& name, Rect bounds, std::string* tabs, size_t numTabs, size_t& selected);
 
     void BeginFrame(
         const std::string& name,
         const std::string& title,
-        const olc::vi2d& position,
+        const Vector2i& position,
         int width,
         bool collapsible = false, bool fixed = false
     );
@@ -198,7 +435,7 @@ public:
         return it->second.lastSelected;
     }
 
-    void ShowPopup(const std::string& name, olc::vi2d position);
+    void ShowPopup(const std::string& name, Vector2i position);
     void ShowPopup(const std::string& name);
 
     bool WidgetPressed(const std::string& name) {
@@ -226,33 +463,22 @@ public:
     void AddDockingAreaRemainingSpace(const std::string& name);
 
     // ------- DRAWING -------
-    olc::Pixel PixelBrightness(olc::Pixel color, float amount);
-    std::pair<int, int> TextSize(const std::string& text);
-
-    void UpdateDecals();
+    Color PixelBrightness(Color color, float amount);
 
     // ------- STATE -------
-    void OnBeforeUserCreate() override;
-    bool OnBeforeUserUpdate(float& fElapsedTime) override;
-    void OnAfterUserUpdate(float fElapsedTime) override;
+    void OnCreate();
+    bool OnUpdate(float deltaTime);
+    void OnFinalize(float deltaTime);
 
     bool GetMouseState() const { return m_state.mouseDown; }
 
-    olc::vi2d GetLastClickedWidgetPosition() const { return m_state.lastClickedWidgetPosition; }
-    olc::vi2d GetMousePos() const { return m_state.mousePos; }
+    Vector2i GetLastClickedWidgetPosition() const { return m_state.lastClickedWidgetPosition; }
+    Vector2i GetMousePos() const { return m_state.mousePos; }
     bool IsMouseDown() const { return m_state.mouseDown; }
 
-    // ------- DRAW COMMANDS -------
-    void DrawText(const std::string& text, olc::Pixel color, Rect bounds, size_t position = -1);
-    void DrawFillRect(olc::Pixel color, Rect bounds, size_t position = -1);
-    void DrawLine(olc::Pixel color, olc::vi2d a, olc::vi2d b, size_t position = -1);
-    void DrawStyleSprite(GuiMapSprite sprite, olc::Pixel color, Rect bounds, size_t position = -1);
-    void DrawStyle9Patch(GuiMapSprite sprite, olc::Pixel color, Rect bounds, uint8_t flags = 0xFF, size_t position = -1);
-    void DrawImage(olc::Decal* image, Rect bounds, size_t position = -1);
-    void EnableClip(Rect bounds);
-    void DisableClip();
+    Renderer& GetRenderer() { return m_renderer; }
 
-    olc::Pixel baseColor{ olc::Pixel(95, 134, 176) };
+    Color baseColor{ Color(95, 134, 176) };
 
 private:
 
@@ -260,16 +486,13 @@ private:
 
     void DrawPopups();
 
-    void DrawStyle9Patch(Rect bounds, olc::Pixel color, GuiMapSprite sprite, uint8_t flags);
-    void DrawStyleSprite(Rect bounds, olc::Pixel color, GuiMapSprite sprite);
     GuiMapSprite WidgetStateToSprite(WidgetState state);
 
     bool CurrentFrameIsCollapsed();
 
-    void RenderAll();
     void RenderDockingAreas();
 
-    olc::Pixel GetBestForegroundColor(const std::optional<olc::Pixel>& bgColor = std::nullopt);
+    Color GetBestForegroundColor(const std::optional<Color>& bgColor = std::nullopt);
 
     size_t NearestDockingArea(const Rect& bounds);
     bool IsDockingAreaFree(size_t id);
@@ -279,7 +502,7 @@ private:
         const std::string& name,
         Rect bounds,
         T& value, T min, T max, T step,
-        const std::optional<olc::Pixel>& bg
+        const std::optional<Color>& bg
     ) requires std::is_integral_v<T> || std::is_floating_point_v<T> {
         const int thumbWidth = 16;
         const int thumbHeight = bounds.height;
@@ -298,16 +521,21 @@ private:
             value = T(int(value / step) * step);
         }
 
-        DrawStyle9Patch(
+        m_renderer.DrawStyle9Patch(
             GuiMapSprite::ButtonActive,
             baseColor,
             Rect{
                 bounds.x, bounds.y,
                 bounds.width, thumbHeight,
-            }
+            },
+            m_state.targetLayer
         );
         if (bg.has_value()) {
-            DrawFillRect(*bg, Rect{ bounds.x + 1, bounds.y + 1, bounds.width - 2, thumbHeight - 2 });
+            m_renderer.DrawFillRect(
+                *bg,
+                Rect{ bounds.x + 1, bounds.y + 1, bounds.width - 2, thumbHeight - 2 },
+                m_state.targetLayer
+            );
         }
 
         auto state = wid.state == WidgetState::Active || wid.state == WidgetState::Clicked ?
@@ -316,19 +544,21 @@ private:
         float fac = float(value - min) / (max - min);
         int thumbX = int(fac * actualWidth);
 
-        DrawStyle9Patch(
+        m_renderer.DrawStyle9Patch(
             WidgetStateToSprite(state),
             baseColor,
-            Rect{ bounds.x + thumbX, bounds.y, thumbWidth, thumbHeight }
+            Rect{ bounds.x + thumbX, bounds.y, thumbWidth, thumbHeight },
+            m_state.targetLayer
         );
-        DrawStyleSprite(
+        m_renderer.DrawStyleSprite(
             GuiMapSprite::Grip,
             baseColor,
             Rect{
                 bounds.x + thumbX + thumbWidth / 2 - 4,
                 bounds.y + thumbHeight / 2 - 4,
                 8, 8
-            }
+            },
+            m_state.targetLayer
         );
 
         return oldVal != value;
@@ -341,15 +571,16 @@ private:
         const std::function<void(T&, T)> fnIncrement,
         T& value, T min, T max, T step,
         const std::string& fmt,
-        const std::optional<olc::Pixel>& bg
+        const std::optional<Color>& bg
     ) requires std::is_integral_v<T> || std::is_floating_point_v<T> {
         const auto dark = PixelBrightness(baseColor, 0.5f);
         const int thumbWidth = 18;
 
-        DrawStyle9Patch(
+        m_renderer.DrawStyle9Patch(
             bg.has_value() ? GuiMapSprite::ButtonIdle : GuiMapSprite::ButtonActive,
             bg.has_value() ? *bg : dark,
-            bounds
+            bounds,
+            m_state.targetLayer
         );
 
         auto wid = GetWidget(name, Rect{ bounds.x + thumbWidth, bounds.y, bounds.width - thumbWidth * 2, bounds.height });
@@ -380,27 +611,38 @@ private:
         }
 
         auto text = utils::StringFormat(fmt.c_str(), value);
-        auto [tw, th] = TextSize(text);
+        auto [tw, th] = m_renderer.GetTextSize(text).AsPair();
 
-        olc::Pixel textColor = olc::WHITE;
+        Color textColor = Color{ 255, 255, 255, 255 };
         if (bg.has_value()) {
             textColor = GetBestForegroundColor(bg);
         }
 
         int textAreaWidth = bounds.width - thumbWidth;
-        DrawText(
+        m_renderer.DrawText(
             text,
             textColor,
-            { bounds.x + textAreaWidth / 2 - tw / 2, bounds.y + bounds.height / 2 - th / 2, bounds.width, bounds.height }
+            { bounds.x + textAreaWidth / 2 - tw / 2, bounds.y + bounds.height / 2 - th / 2, bounds.width, bounds.height },
+            m_state.targetLayer
         );
 
         return changed;
     }
 
+    struct Word {
+        std::string text;
+        enum {
+            TypeText = 0,
+            TypeSpace,
+            TypeTab,
+            TypeNewLine
+        } type;
+    };
+
     struct Popup {
         std::string name;
-        olc::vi2d position;
-        olc::vi2d size;
+        Vector2i position;
+        Vector2i size;
         std::vector<std::string> items;
         size_t lastSelected{ 0 };
     };
@@ -412,7 +654,7 @@ private:
         size_t insertId;
 
         Rect bounds, titleBounds;
-        olc::vi2d positionOffset{ 0, 0 };
+        Vector2i positionOffset{ 0, 0 };
         bool collapsible, fixed;
         bool collapsed{ false }, dragging{ false };
 
@@ -426,7 +668,7 @@ private:
     struct {
         size_t hoveredId, activeId, focusedId, frontMostPanelId{ 0 };
         bool mouseDown, ignoreCollapsed{ false };
-        olc::vi2d mousePos, lastClickedWidgetPosition, mouseDelta;
+        Vector2i mousePos, lastClickedWidgetPosition, mouseDelta;
         size_t openPopup;
         float blinkTimer{ 0.0f };
         bool blink{ false };
@@ -445,1304 +687,683 @@ private:
 
     // graphics/layout states
     std::vector<Rect> m_rectStack;
-    std::map<size_t, std::unique_ptr<olc::Decal>> m_images;
+
+    Renderer m_renderer{};
 
     // docking
     std::map<size_t, Rect> m_dockingAreas;
 
-    // --- DRAW COMMANDS ---
-    std::unique_ptr<olc::Sprite> m_guiSprite;
-    std::unique_ptr<olc::Decal> m_guiDecal;
-
-    enum class DrawCommandType {
-        Text,
-        FillRect,
-        Line,
-        StyleSprite,
-        Style9Patch,
-        Image,
-        EnableClip,
-        DisableClip
-    };
-
-    struct DrawCommand {
-        DrawCommandType type;
-        std::string text;
-        olc::Pixel color;
-        Rect bounds;
-        olc::Decal* image;
-        GuiMapSprite sprite;
-        uint8_t ninePatchFlags{ 0xFF };
-        uint32_t targetLayer{ 0 };
-    };
-
-    struct Word {
-        std::string text;
-        enum {
-            TypeText = 0,
-            TypeSpace,
-            TypeTab,
-            TypeNewLine
-        } type;
-    };
-
-    std::vector<DrawCommand> m_drawCommands;
     uint32_t m_widgetsLayer{ 0 }, m_panelsLayer{ 0 };
 
-    void AddDrawCommand(DrawCommand cmd, size_t position = -1);
     void SetTargetLayer(uint32_t layer);
 };
 
-#ifdef OLC_PGEX_TINYGUI
+#ifdef TINYGUI_IMPLEMENTATION
 
-void olcPGEX_TinyGUI::RenderAll() {
-    std::vector<Rect> scissorStack;
-
-    uint32_t prevDrawTarget = 0;
-    for (const auto& cmd : m_drawCommands) {
-        if (prevDrawTarget != cmd.targetLayer) {
-            pge->SetDrawTarget(cmd.targetLayer);
-            prevDrawTarget = cmd.targetLayer;
-        }
-
-        switch (cmd.type) {
-			case DrawCommandType::Text:
-                pge->DrawStringPropDecal(
-					{ float(cmd.bounds.x), float(cmd.bounds.y) },
-					cmd.text,
-					cmd.color
-				);
-				break;
-			case DrawCommandType::FillRect:
-				pge->FillRectDecal(cmd.bounds.Position(), cmd.bounds.Size(), cmd.color);
-				break;
-			case DrawCommandType::Line:
-                pge->DrawLineDecal(
-                    olc::vf2d{ float(cmd.bounds.x), float(cmd.bounds.y) },
-                    olc::vf2d{ float(cmd.bounds.width), float(cmd.bounds.height) },
-					cmd.color
-				);
-				break;
-            case DrawCommandType::Style9Patch:
-				DrawStyle9Patch(cmd.bounds, cmd.color, cmd.sprite, cmd.ninePatchFlags);
-				break;
-			case DrawCommandType::StyleSprite:
-                DrawStyleSprite(cmd.bounds, cmd.color, cmd.sprite);
-				break;
-            case DrawCommandType::Image: {
-                olc::vf2d scale = {
-                    float(cmd.bounds.width) / cmd.image->sprite->width,
-					float(cmd.bounds.height) / cmd.image->sprite->height
-                };
-                pge->DrawDecal(cmd.bounds.Position(), cmd.image, scale, cmd.color);
-            } break;
-            case DrawCommandType::EnableClip: {
-                // get current scissor rect
-                GLint rect[4];
-                glGetIntegerv(GL_SCISSOR_BOX, rect);
-                scissorStack.push_back(Rect{ rect[0], rect[1], rect[2], rect[3] });
-
-                glScissor(cmd.bounds.x, pge->ScreenHeight() - cmd.bounds.height - cmd.bounds.y, cmd.bounds.width, cmd.bounds.height);
-            } break;
-            case DrawCommandType::DisableClip: {
-                if (scissorStack.empty()) continue;
-                auto& rect = scissorStack.back();
-                scissorStack.pop_back();
-                glScissor(rect.x, rect.y, rect.width, rect.height);
-			} break;
-            default: break;
-		}
+void Texture::Load(const std::string& fileName) {
+#ifdef OLC_PGE_APPLICATION
+	m_sprite = std::make_unique<olc::Sprite>(fileName);
+	m_decal = std::make_unique<olc::Decal>(m_sprite.get());
+    m_width = m_sprite->width;
+    m_height = m_sprite->height;
+#else
+	int width, height, channels;
+	stbi_set_flip_vertically_on_load(true);
+	unsigned char* data = stbi_load(fileName.c_str(), &width, &height, &channels, 0);
+    if (!data) {
+		std::cerr << "Failed to load texture: " << fileName << std::endl;
+		return;
 	}
-	m_drawCommands.clear();
+
+    LoadFromMemory(data, width, height, channels);
+
+	stbi_image_free(data);
+#endif
 }
 
-void olcPGEX_TinyGUI::RenderDockingAreas() {
-    for (const auto& [id, rect] : m_dockingAreas) {
-        if (!IsDockingAreaFree(id)) continue;
-        DrawStyle9Patch(
-            GuiMapSprite::Selection,
-            olc::Pixel(0, 0, 0, 110),
-            rect
-        );
-	}
-}
+void Texture::LoadFromMemory(uint8_t* data, uint32_t width, uint32_t height, uint32_t channels) {
+#ifdef OLC_PGE_APPLICATION
+    // TODO: Finish this up
+	m_sprite = std::make_unique<olc::Sprite>(width, height);
+	m_decal = std::make_unique<olc::Decal>(m_sprite.get());
+	m_width = width;
+	m_height = height;
+#else
+    glGenTextures(1, &m_id);
+    glBindTexture(GL_TEXTURE_2D, m_id);
 
-bool olcPGEX_TinyGUI::CurrentFrameIsCollapsed() {
-    if (m_state.ignoreCollapsed) return false;
-    if (m_frameStack.empty()) return false;
-    return m_frames[m_frameStack.back()].collapsed;
-}
-
-Rect Rect::Expand(int amount) {
-	Rect rec = *this;
-	rec.x -= amount;
-	rec.y -= amount;
-	rec.width += amount * 2;
-	rec.height += amount * 2;
-	return rec;
-}
-
-bool Rect::Intersects(const Rect& other) const {
-    return x < other.x + other.width &&
-        x + width > other.x &&
-        y < other.y + other.height &&
-        y + height > other.y;
-}
-
-Rect Rect::Union(const Rect& other) const {
-    int x1 = std::min(x, other.x);
-	int y1 = std::min(y, other.y);
-	int x2 = std::max(x + width, other.x + other.width);
-	int y2 = std::max(y + height, other.y + other.height);
-	return { x1, y1, x2 - x1, y2 - y1 };
-}
-
-Rect Rect::Intersection(const Rect& other) const {
-    // if there is no intersection
-    if (!Intersects(other)) return { 0, 0, 0, 0 };
-
-    int x1 = std::max(x, other.x);
-    int y1 = std::max(y, other.y);
-    int x2 = std::min(x + width, other.x + other.width);
-    int y2 = std::min(y + height, other.y + other.height);
-    return { x1, y1, x2 - x1, y2 - y1 };
-}
-
-int Rect::DistanceToRect(const Rect& other) const {
-    //if (Intersects(other)) return 0;
-
-	int dx = 0, dy = 0;
-	if (x + width < other.x) dx = other.x - (x + width);
-	else if (x > other.x + other.width) dx = x - (other.x + other.width);
-
-	if (y + height < other.y) dy = other.y - (y + height);
-	else if (y > other.y + other.height) dy = y - (other.y + other.height);
-
-	return std::max(dx, dy);
-}
-
-bool Rect::HasPoint(int x, int y) const {
-	return x >= this->x && x < this->x + this->width && y >= this->y && y < this->y + this->height;
-}
-
-bool Rect::HasPoint(const olc::vi2d& pos) const {
-	return HasPoint(pos.x, pos.y);
-}
-
-void olcPGEX_TinyGUI::UpdateDecals() {
-	for (auto&& [id, decal] : m_images) {
-		decal->Update();
-	}
-}
-
-void olcPGEX_TinyGUI::Label(
-    Rect bounds,
-    const std::string& text,
-    int alignment,
-    const std::optional<olc::Pixel>& bg,
-    bool wordWrap
-) {
-    if (CurrentFrameIsCollapsed()) return;
-
-    if (bg.has_value()) {
-        DrawFillRect(*bg, bounds);
-    }
-
-    const int defaultLineSpacing = 2;
-
-    olc::Pixel col = GetBestForegroundColor(bg);
-
-    std::vector<char> stringArray(text.begin(), text.end());
-    std::vector<Word> words;
-
-    while (!stringArray.empty()) {
-        if (::isspace(stringArray[0]) && stringArray[0] != '\n' && stringArray[0] != '\t') {
-			words.push_back({ " ", Word::TypeSpace });
-			stringArray.erase(stringArray.begin());
-        }
-        else if (stringArray[0] == '\t') {
-			words.push_back({ "\t", Word::TypeTab });
-			stringArray.erase(stringArray.begin());
-        }
-        else if (stringArray[0] == '\n') {
-			words.push_back({ "\n", Word::TypeNewLine });
-			stringArray.erase(stringArray.begin());
-        }
-        else {
-			std::string word;
-            while (!stringArray.empty() && !::isspace(stringArray[0])) {
-				word += stringArray[0];
-				stringArray.erase(stringArray.begin());
-			}
-			words.push_back({ word, Word::TypeText });
-		}
-    }
-
-    int totalHeight = 0;
-    int lineHeightAvg = 0;
-    std::vector<int> lineWidths;
-
-    // compute total height and max width
-    int tempWidth = 0, tempHeight = 0;
-    for (const auto& word : words) {
-        if (word.type == Word::TypeNewLine) {
-            lineHeightAvg += tempHeight;
-			totalHeight += tempHeight;
-			tempHeight = 0;
-            lineWidths.push_back(tempWidth);
-			tempWidth = 0;
-		}
-        else {
-			auto [tw, th] = TextSize(word.text);
-
-            if (word.type == Word::TypeTab) {
-                tw *= 4;
-			}
-
-            if (tempWidth + tw > bounds.width) {
-                if (wordWrap) {
-                    lineHeightAvg += tempHeight;
-                    totalHeight += tempHeight;
-                    tempHeight = 0;
-                    lineWidths.push_back(tempWidth);
-                    tempWidth = 0;
-                }
-            }
-            tempWidth += tw;
-			tempHeight = std::max(tempHeight, th + defaultLineSpacing);
-		}
-	}
-    lineWidths.push_back(tempWidth);
-
-    if (lineHeightAvg <= 0) {
-        auto [tw, th] = TextSize(words[0].text);
-        lineHeightAvg = th;
-    }
-    else {
-        lineHeightAvg /= lineWidths.size();
-    }
-
-    int offY = 0;
-
-    // alignment offset
-    uint32_t alignX = alignment & 0x0F;
-    uint32_t alignY = alignment & 0xF0;
-
-    switch (alignY) {
-        case AlignMiddle: offY = bounds.height / 2 - totalHeight / 2; break;
-        case AlignBottom: offY = bounds.height - totalHeight; break;
+    GLenum format = GL_RGB;
+    switch (channels) {
+        case 1: format = GL_ALPHA; break;
+        case 3: format = GL_RGB; break;
+        case 4: format = GL_RGBA; break;
         default: break;
     }
 
-    int currentX = 0, currentY = 0;
-    int lineIndex = 0;
-    while (!words.empty()) {
-        Word word = words[0];
-        words.erase(words.begin());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
 
-        switch (word.type) {
-            case Word::TypeText: {
-                auto [tw, th] = TextSize(word.text);
-                
-                if (currentX + tw > bounds.width) {
-                    if (wordWrap) {
-                        currentX = 0;
-                        currentY += lineHeightAvg;
-                        lineIndex++;
-                    }
-                    else {
-						break;
-					}
-                }
+    glGenerateMipmap(GL_TEXTURE_2D);
 
-                int offX = 0;
-                switch (alignX) {
-                    case AlignCenter: offX = bounds.width / 2 - lineWidths[lineIndex] / 2; break;
-                    case AlignRight: offX = bounds.width - lineWidths[lineIndex]; break;
-                    default: break;
-                }
-
-                DrawText(
-                    word.text,
-                    col,
-                    { bounds.x + currentX + offX, bounds.y + currentY + offY, bounds.width, bounds.height }
-                );
-
-                currentX += tw;
-			} break;
-            case Word::TypeSpace: {
-                auto [tw, th] = TextSize(" ");
-                currentX += tw;
-			} break;
-            case Word::TypeTab: {
-                auto [tw, th] = TextSize(" ");
-                currentX += tw * 2;
-			} break;
-            case Word::TypeNewLine: {
-				currentX = 0;
-				currentY += lineHeightAvg;
-                lineIndex++;
-			} break;
-        }
-    }
+    m_width = width;
+    m_height = height;
+#endif
 }
 
-bool olcPGEX_TinyGUI::Button(const std::string& name, Rect bounds, const std::string& text, const std::optional<olc::Pixel>& color) {
-    if (CurrentFrameIsCollapsed()) return false;
-    
-    auto& wid = GetWidget(name, bounds);
-    DrawStyle9Patch(WidgetStateToSprite(wid.state), color.value_or(baseColor), bounds);
+#ifndef OLC_PGE_APPLICATION
+Shader& Shader::AddSource(Type type, const std::string& source) {
+    GLuint shader = glCreateShader(static_cast<GLenum>(type));
+    const char* src = source.c_str();
+    glShaderSource(shader, 1, &src, nullptr);
+    glCompileShader(shader);
 
-    auto [tw, th] = TextSize(text);
-
-    olc::Pixel textColor = GetBestForegroundColor(color);
-    if (wid.state == WidgetState::Active) {
-        textColor = olc::WHITE;
+    GLint success;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+		char infoLog[512];
+		glGetShaderInfoLog(shader, 512, nullptr, infoLog);
+		std::cerr << "Shader compilation failed: " << infoLog << std::endl;
 	}
 
-    if (color.has_value()) {
-        Rect innerBounds = bounds.Expand(-3);
-        DrawFillRect(color.value(), innerBounds);
+    m_shaders.push_back(shader);
+
+    return (*this);
+}
+
+void Shader::Link() {
+    m_id = glCreateProgram();
+    for (auto shader : m_shaders) {
+		glAttachShader(m_id, shader);
+	}
+	glLinkProgram(m_id);
+
+	GLint success;
+	glGetProgramiv(m_id, GL_LINK_STATUS, &success);
+    if (!success) {
+		char infoLog[512];
+		glGetProgramInfoLog(m_id, 512, nullptr, infoLog);
+		std::cerr << "Shader linking failed: " << infoLog << std::endl;
 	}
 
-    DrawText(
-        text,
-		textColor,
-		{ bounds.x + bounds.width / 2 - tw / 2, bounds.y + bounds.height / 2 - th / 2, bounds.width, bounds.height }
+    for (auto shader : m_shaders) {
+		glDeleteShader(shader);
+	}
+
+    m_shaders.clear();
+}
+
+void Shader::Use() const {
+    glUseProgram(m_id);
+}
+
+void Shader::SetUniform(const std::string& name, int value) {
+    glUniform1i(GetUniformLocation(name), value);
+}
+
+void Shader::SetUniform(const std::string& name, float value) {
+    glUniform1f(GetUniformLocation(name), value);
+}
+
+void Shader::SetUniform(const std::string& name, const Vector2f& value) {
+	glUniform2f(GetUniformLocation(name), value.x, value.y);
+}
+
+void Shader::SetUniform(const std::string& name, const Color& value) {
+    glUniform4f(
+        GetUniformLocation(name),
+        float(value.r) / 255.0f,
+        float(value.g) / 255.0f,
+        float(value.b) / 255.0f,
+        float(value.a) / 255.0f
     );
-
-    return wid.state == WidgetState::Clicked;
 }
 
-bool olcPGEX_TinyGUI::Toggle(const std::string& name, Rect bounds, const std::string& text, bool& value) {
-    if (CurrentFrameIsCollapsed()) return false;
-    
-    auto& wid = GetWidget(name, bounds);
-    DrawStyle9Patch(WidgetStateToSprite(!value ? wid.state : WidgetState::Active), baseColor, bounds);
-
-    if (wid.state == WidgetState::Clicked) {
-        value = !value;
-    }
-
-    auto [tw, th] = TextSize(text);
-
-    olc::Pixel textColor = GetBestForegroundColor();
-    if (wid.state == WidgetState::Active) {
-        textColor = olc::WHITE;
-    }
-
-    DrawText(
-        text,
-        value ? olc::WHITE : textColor,
-        Rect{ bounds.x + bounds.width / 2 - tw / 2, bounds.y + bounds.height / 2 - th / 2, bounds.width, bounds.height }
-    );
-
-    return wid.state == WidgetState::Clicked;
+void Shader::SetUniform(const std::string& name, float* matrix, bool transpose) {
+    glUniformMatrix4fv(GetUniformLocation(name), 1, transpose, matrix);
 }
 
-bool olcPGEX_TinyGUI::Slider(
-    const std::string& name, Rect bounds,
-    int& value, int min, int max, int step,
-    const std::optional<olc::Pixel>& bg
-) {
-    if (CurrentFrameIsCollapsed()) return false;
-    return SliderImpl<int>(name, bounds, value, min, max, step, bg);
-}
-
-bool olcPGEX_TinyGUI::SliderF(
-    const std::string& name,
-    Rect bounds,
-    float& value, float min, float max, float step,
-    const std::optional<olc::Pixel>& bg
-) {
-    if (CurrentFrameIsCollapsed()) return false;
-    return SliderImpl<float>(name, bounds, value, min, max, step, bg);
-}
-
-bool olcPGEX_TinyGUI::Spinner(
-    const std::string& name,
-    Rect bounds,
-    int& value, int min, int max, int step,
-    const std::string& fmt,
-    const std::optional<olc::Pixel>& bg
-) {
-    if (CurrentFrameIsCollapsed()) return false;
-    return SpinnerImpl<int>(
-		name, bounds,
-		[&](int& val, int inc) { val += inc; },
-        value, min, max, step, fmt, bg
-	);
-}
-
-bool olcPGEX_TinyGUI::SpinnerF(
-    const std::string& name,
-    Rect bounds,
-    float& value, float min, float max, float step,
-    const std::string& fmt,
-    const std::optional<olc::Pixel>& bg
-) {
-    if (CurrentFrameIsCollapsed()) return false;
-    return SpinnerImpl<float>(
-		name, bounds,
-		[&](float& val, float inc) { val += inc; },
-        value, min, max, step, fmt, bg
-	);
-}
-
-bool olcPGEX_TinyGUI::EditBox(const std::string& name, Rect bounds, std::string& text) {
-    if (CurrentFrameIsCollapsed()) return false;
-    
-    auto& wid = GetWidget(name, bounds);
-
-    const auto light = olc::WHITE;
-    bool textChanged = false;
-    bool focused = m_state.focusedId == wid.id;
-
-    DrawStyle9Patch(GuiMapSprite::ButtonActive, baseColor, bounds);
-
-    if (focused && !pge->IsTextEntryEnabled()) {
-        pge->TextEntryEnable(true, text);
-    }
-
-    // text entry
-    if (focused) {
-        textChanged = pge->TextEntryGetString() != text;
-        text = pge->TextEntryGetString();
-    }
-
-    auto sz = pge->GetTextSizeProp(text.substr(0, pge->TextEntryGetCursor()));
-    int cursorX = bounds.x + 4 + sz.x;
-    int textViewOffsetX = 0;
-
-    // cursor is out of bounds?
-    if (cursorX - textViewOffsetX > (bounds.x + bounds.width - 4) - 8 && focused) {
-		textViewOffsetX = cursorX - (bounds.x + bounds.width - 4) + 8;
+GLint Shader::GetUniformLocation(const std::string& name) {
+    auto it = m_uniforms.find(name);
+    if (it != m_uniforms.end()) {
+		return it->second;
 	}
 
-    auto [tw, th] = TextSize(text);
-
-    int textX = bounds.x + 4 - textViewOffsetX;
-    EnableClip(bounds.Expand(-1));
-    DrawText(text, light, Rect{ textX, bounds.y + bounds.height / 2 - th / 2, bounds.width, bounds.height });
-    DisableClip();
-
-    // draw cursor
-    if (focused && m_state.blink) {
-        DrawText("_", light, { cursorX - textViewOffsetX, bounds.y + bounds.height / 2 - sz.y / 2, 1, 1 });
-    }
-
-    if (!focused && pge->IsTextEntryEnabled()) {
-        pge->TextEntryEnable(false);
-	}
-
-    return textChanged;
+	GLint location = glGetUniformLocation(m_id, name.c_str());
+	m_uniforms[name] = location;
+	return location;
 }
 
-void olcPGEX_TinyGUI::Image(const std::string& name, Rect bounds, olc::Sprite* sprite) {
-    if (CurrentFrameIsCollapsed()) return;
-    
-    auto id = std::hash<std::string>()(name);
-    DrawStyle9Patch(GuiMapSprite::ButtonActive, baseColor, bounds);
-	
-    if (!sprite) return;
+BatchedRenderer::BatchedRenderer() {
+    glGenVertexArrays(1, &m_vao);
+	glGenBuffers(1, &m_vbo);
 
-    // find decal
-    auto&& pos = m_images.find(id);
-    if (pos == m_images.end()) {
-		m_images[id] = std::make_unique<olc::Decal>(sprite, false, true);
-		pos = m_images.find(id);
-	}
+	glBindVertexArray(m_vao);
 
-	// calculate image rect maintain aspect ratio 
-    float aspect = 1.0f;
-    if (sprite->width > sprite->height) {
-        aspect = float(sprite->height) / sprite->width;
-	}
-	else {
-		aspect = float(sprite->width) / sprite->height;
-	}
+	glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
+	glBufferData(GL_ARRAY_BUFFER, 0, nullptr, GL_DYNAMIC_DRAW);
 
-    int width = bounds.width - 4;
-	int height = int(width * aspect);
+	glEnableVertexAttribArray(0);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, pos));
 
-	if (height > bounds.height - 4) {
-		height = bounds.height - 4;
-		width = int(height / aspect);
-	}
+	glEnableVertexAttribArray(1);
+	glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, color));
 
-	int x = bounds.x + bounds.width / 2 - width / 2;
-	int y = bounds.y + bounds.height / 2 - height / 2;
+	glEnableVertexAttribArray(2);
+	glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, uv));
 
-    DrawCommand cmd{};
-    cmd.type = DrawCommandType::Image;
-    cmd.bounds = Rect{ x, y, width, height };
-    cmd.color = olc::WHITE;
-    cmd.image = pos->second.get();
-    m_drawCommands.push_back(cmd);
+    glEnable(GL_BLEND);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
 
-void olcPGEX_TinyGUI::TabBar(const std::string& name, Rect bounds, std::string* tabs, size_t numTabs, size_t& selected) {
-    if (CurrentFrameIsCollapsed()) return;
-    
-    const int nextButtonWidth = 16;
-
-    auto fg = GetBestForegroundColor();
-
-    auto id = std::hash<std::string>()(name);
-    auto pos = m_tabBars.find(id);
-    if (pos == m_tabBars.end()) {
-		m_tabBars[id] = TabBarState();
-		pos = m_tabBars.find(id);
-	}
-
-    auto& tabBar = pos->second;
-
-    std::vector<Rect> tabBounds;
-
-    uint32_t startTab = tabBar.startIndex;
-    uint32_t numVisibleTabs = 0;
-
-    auto fnDrawTab = [&](Rect tabRect, size_t index, int offsetY) {
-        auto [tw, th] = TextSize(tabs[index]);
-
-        auto wid = GetWidget(name + "_tab" + std::to_string(index), tabRect);
-        if (wid.state == WidgetState::Clicked) {
-            selected = index;
-        }
-
-        tabRect.y += offsetY;
-        tabRect.height -= offsetY;
-
-        DrawStyle9Patch(
-            GuiMapSprite::ButtonIdle,
-            baseColor,
-            tabRect,
-            0b00011111
-        );
-
-        DrawText(
-            tabs[index],
-            fg,
-            {
-                tabRect.x + tabRect.width / 2 - tw / 2,
-                tabRect.y + tabRect.height / 2 - th / 2,
-                tabRect.width, tabRect.height
-            }
-        );
+void BatchedRenderer::DrawQuad(const Rect& bounds, const Color& color, Texture* texture) {
+    const Vector2f vertices[] = {
+        { 0.0f, 0.0f },
+        { 1.0f, 0.0f },
+		{ 1.0f, 1.0f },
+		{ 0.0f, 1.0f }
     };
+    const uint32_t indices[] = { 0, 1, 2, 2, 3, 0 };
 
-    Rect selectedTabRect{};
-    int offX = 3;
-    for (size_t i = tabBar.startIndex; i < numTabs; i++) {
-        auto [tw, th] = TextSize(tabs[i]);
-        Rect tabRect{
-			bounds.x + offX,
-			bounds.y,
-			tw + 10,
-			bounds.height + 3
-		};
+    uint32_t vertOffset = m_vertices.size();
+    Batch* batch = GetNewBatch(Batch::TypeQuad, 6, texture);
 
-        if (offX + tabRect.width > bounds.width - nextButtonWidth * 2)
-			break;
+    for (size_t i = 0; i < 6; i++) {
+        Vertex vertex{};
+        vertex.pos = {
+            float(bounds.x + vertices[indices[i]].x * bounds.width),
+            float(bounds.y + vertices[indices[i]].y * bounds.height)
+        };
+        vertex.color[0] = float(color.r) / 255.0f;
+        vertex.color[1] = float(color.g) / 255.0f;
+        vertex.color[2] = float(color.b) / 255.0f;
+        vertex.color[3] = float(color.a) / 255.0f;
+        vertex.uv = { vertices[indices[i]].x, vertices[indices[i]].y };
 
-        offX += tabRect.width - 3;
-
-        // draw except selected
-        if (i == selected) {
-            selectedTabRect = tabRect;
-        } else fnDrawTab(tabRect, i, 4);
-
-        numVisibleTabs++;
-	}
-
-    // draw selected tab
-    if (selected >= tabBar.startIndex && selected < tabBar.startIndex + numVisibleTabs)
-        fnDrawTab(selectedTabRect, selected, 0);
-
-    if (numVisibleTabs < numTabs) {
-		// draw next button
-		Rect nextButton{
-			bounds.x + bounds.width - nextButtonWidth,
-			bounds.y + 4,
-			nextButtonWidth,
-			bounds.height - 4
-		};
-
-		if (Button(name + "_next", nextButton, "")) {
-			tabBar.startIndex++;
-			tabBar.startIndex = std::clamp(tabBar.startIndex, uint32_t(0), uint32_t(numTabs) - numVisibleTabs);
-		}
-        DrawStyleSprite(
-            GuiMapSprite::ArrowRight,
-            GetBestForegroundColor(),
-            Rect{ nextButton.x + nextButton.width / 2 - 4, nextButton.y + nextButton.height / 2 - 4 + 1, 8, 8 }
-        );
-
-		// draw prev button
-		Rect prevButton{
-			bounds.x + bounds.width - nextButtonWidth * 2,
-			bounds.y + 4,
-			nextButtonWidth,
-			bounds.height - 4
-		};
-
-		if (Button(name + "_prev", prevButton, "")) {
-			tabBar.startIndex--;
-			tabBar.startIndex = std::clamp(tabBar.startIndex, uint32_t(0), uint32_t(numTabs) - numVisibleTabs);
-		}
-        DrawStyleSprite(
-			GuiMapSprite::ArrowLeft,
-			GetBestForegroundColor(),
-			Rect{ prevButton.x + prevButton.width / 2 - 4, prevButton.y + prevButton.height / 2 - 4 + 1, 8, 8 }
-		);
-	}
-
-    DrawLine(olc::BLACK, { bounds.x, bounds.y + bounds.height }, { bounds.x + bounds.width, bounds.y + bounds.height });
+        m_vertices.push_back(vertex);
+    }
 }
 
-bool olcPGEX_TinyGUI::MakePopup(
-    const std::string& name,
-    std::string* items, size_t numItems, size_t* selected
-) {
-    auto id = std::hash<std::string>()(name);
-    auto&& pos = m_popups.find(id);
-    if (pos == m_popups.end()) {
-        m_popups[id] = Popup();
-        pos = m_popups.find(id);
+void BatchedRenderer::DrawPartialQuad(const Rect& dest, const Rect& src, const Color& color, Texture* texture) {
+    const Vector2f vertices[] = {
+		{ 0.0f, 0.0f },
+		{ 1.0f, 0.0f },
+		{ 1.0f, 1.0f },
+		{ 0.0f, 1.0f }
+	};
+
+    const Vector2ui size = texture->Size();
+    const Vector2f uvs[] = {
+        { float(src.x) / size.x, float(src.y) / size.y },
+        { float(src.x + src.width) / size.x, float(src.y) / size.y },
+		{ float(src.x + src.width) / size.x, float(src.y + src.height) / size.y },
+		{ float(src.x) / size.x, float(src.y + src.height) / size.y }
+    };
+	const uint32_t indices[] = { 0, 1, 2, 2, 3, 0 };
+
+    uint32_t vertOffset = m_vertices.size();
+    Batch* batch = GetNewBatch(Batch::TypeQuad, 6, texture);
+
+    for (size_t i = 0; i < 6; i++) {
+        Vertex vertex{};
+        vertex.pos = {
+            float(dest.x + vertices[indices[i]].x * dest.width),
+            float(dest.y + vertices[indices[i]].y * dest.height)
+        };
+        vertex.color[0] = float(color.r) / 255.0f;
+        vertex.color[1] = float(color.g) / 255.0f;
+        vertex.color[2] = float(color.b) / 255.0f;
+        vertex.color[3] = float(color.a) / 255.0f;
+        vertex.uv = uvs[indices[i]];
+
+        m_vertices.push_back(vertex);
     }
+}
 
-    auto& popup = pos->second;
-    popup.name = name;
-    popup.items = std::vector<std::string>(items, items + numItems);
+void BatchedRenderer::DrawLine(Vector2i a, Vector2i b, const Color& color) {
+    uint32_t vertOffset = m_vertices.size();
+    Batch* batch = GetNewBatch(Batch::TypeLine, 2, nullptr);
 
-    int width = 0, height = 0;
-    for (size_t i = 0; i < numItems; i++) {
-        auto item = items[i];
+    Vector2i points[] = { a, b };
+    for (size_t i = 0; i < 2; i++) {
+        Vertex vertex{};
+        vertex.pos = { float(points[i].x), float(points[i].y) };
+        vertex.color[0] = float(color.r) / 255.0f;
+        vertex.color[1] = float(color.g) / 255.0f;
+        vertex.color[2] = float(color.b) / 255.0f;
+        vertex.color[3] = float(color.a) / 255.0f;
+        vertex.uv = { 0.0f, 0.0f };
 
-        width = std::max(width, TextSize(item).first);
+        m_vertices.push_back(vertex);
+    }
+}
 
-        if (item.find_first_not_of('-') == std::string::npos) {
-            height += PopupItemHeight / 2;
+void BatchedRenderer::EnableScissor(const Rect& bounds) {
+    Batch batch{};
+	batch.offset = 0;
+	batch.count = 0;
+	batch.type = Batch::TypeScissor;
+	batch.scissor = bounds;
+	m_batches.push_back(batch);
+}
+
+void BatchedRenderer::DisableScissor() {
+    Batch batch{};
+	batch.offset = 0;
+	batch.count = 0;
+	batch.type = Batch::TypeScissor;
+	batch.scissor = Rect{ 0, 0, 0, 0 };
+	m_batches.push_back(batch);
+}
+
+void BatchedRenderer::DrawPartialQuadUV(const Rect& dest, float* uvs, const Color& color, Texture* texture) {
+    const Vector2f vertices[] = {
+		{ 0.0f, 0.0f },
+		{ 1.0f, 0.0f },
+		{ 1.0f, 1.0f },
+		{ 0.0f, 1.0f }
+	};
+	const uint32_t indices[] = { 0, 1, 2, 2, 3, 0 };
+
+	uint32_t vertOffset = m_vertices.size();
+	Batch* batch = GetNewBatch(Batch::TypeQuad, 6, texture);
+
+	for (size_t i = 0; i < 6; i++) {
+		Vertex vertex{};
+		vertex.pos = {
+			float(dest.x + vertices[indices[i]].x * dest.width),
+			float(dest.y + vertices[indices[i]].y * dest.height)
+		};
+		vertex.color[0] = float(color.r) / 255.0f;
+		vertex.color[1] = float(color.g) / 255.0f;
+		vertex.color[2] = float(color.b) / 255.0f;
+		vertex.color[3] = float(color.a) / 255.0f;
+		vertex.uv = { uvs[indices[i] * 2], uvs[indices[i] * 2 + 1] };
+
+		m_vertices.push_back(vertex);
+	}
+}
+
+void BatchedRenderer::DrawChar(Font* font, const Vector2f& pos, char c, Color color) {
+    stbtt_packedchar packedChar = font->GetPackedChar(c);
+    
+    Rect src = {
+		packedChar.x0, packedChar.y0,
+		packedChar.x1 - packedChar.x0, packedChar.y1 - packedChar.y0
+	};
+    Rect dest = {
+		int(pos.x + packedChar.xoff),
+		int(pos.y + packedChar.yoff) + font->GetBaseline(),
+		src.width, src.height
+	};
+
+	DrawPartialQuad(dest, src, color, &font->GetTexture());
+}
+
+void BatchedRenderer::DrawText(Font* font, const Vector2f& pos, const std::string& text, Color color) {
+    Vector2f cursor = pos;
+	for (size_t i = 0; i < text.size(); i++) {
+		char c = text[i];
+		if (c < 32 || c >= 128) continue;
+
+		DrawChar(font, cursor, c, color);
+
+        auto chr = font->GetPackedChar(c);
+		cursor.x += chr.xadvance;
+	}
+}
+
+Vector2i BatchedRenderer::GetTextSize(Font* font, const std::string& text) {
+    int w = 0, h = 0;
+
+    int accumWidth = 0;
+    for (size_t i = 0; i < text.size(); i++) {
+        char c = text[i];
+        if (c < 32 || c >= 128) continue;;
+
+        if (c == '\n') {
+            h += font->GetLineHeight();
+            w = std::max(w, accumWidth);
+            accumWidth = 0;
         }
         else {
-            height += PopupItemHeight;
+            accumWidth += font->GetPackedChar(c).xadvance;
         }
     }
 
-    Rect bounds{ popup.position.x, popup.position.y, width + 6, height + 4 };
+    w = std::max(w, accumWidth);
+    h += font->GetLineHeight();
 
-    popup.size = bounds.Size();
+    return { w, h };
+}
 
-    if (m_state.openPopup != id) return false;
+void BatchedRenderer::Render(Shader* shader, Vector2ui screenSize) {
+    UpdateBuffers();
 
-    if (m_state.mouseDown && !bounds.HasPoint(m_state.mousePos)) {
-        m_state.openPopup = 0;
-        return false;
-    }
+    auto fnOrtho = [](float left, float right, float bottom, float top, float znear, float zfar, float* m) {
+        float tx = -((right + left) / (right - left));
+		float ty = -((top + bottom) / (top - bottom));
+		float tz = -((zfar + znear) / (zfar - znear));
 
-    int y = bounds.y + 2;
-    for (size_t i = 0; i < numItems; i++) {
-        auto item = items[i];
+        m[0] = 2.0f / (right - left);
+        m[1] = 0.0f;
+        m[2] = 0.0f;
+        m[3] = 0.0f;
 
-        if (item.find_first_not_of('-') == std::string::npos) {
-            y += PopupItemHeight / 2;
-            continue;
+        m[4] = 0.0f;
+        m[5] = 2.0f / (top - bottom);
+        m[6] = 0.0f;
+        m[7] = 0.0f;
+
+        m[8] = 0.0f;
+        m[9] = 0.0f;
+        m[10] = -2.0f / (zfar - znear);
+        m[11] = 0.0f;
+
+        m[12] = tx;
+        m[13] = ty;
+        m[14] = tz;
+        m[15] = 1.0f;
+
+    };
+
+    float projection[16];
+    fnOrtho(0.0f, float(screenSize.x), float(screenSize.y), 0.0f, -1.0f, 1.0f, projection);
+
+    shader->SetUniform("uTexture", 0);
+    shader->SetUniform("uProjection", projection);
+
+    int scissorBox[4];
+    glGetIntegerv(GL_SCISSOR_BOX, scissorBox);
+
+    glActiveTexture(GL_TEXTURE0);
+
+    GLuint prevTexture = 0;
+    for (const Batch& batch : m_batches) {
+        if (batch.texture && prevTexture != batch.texture->GetID()) {
+			glBindTexture(GL_TEXTURE_2D, batch.texture->GetID());
+            prevTexture = batch.texture->GetID();
         }
 
-        Rect itemBounds{ bounds.x, y, bounds.width, PopupItemHeight };
-        auto wd = GetWidget(item + name, itemBounds, false);
+        shader->SetUniform("uUseTexture", batch.texture ? 1 : 0);
 
-        if (wd.state == WidgetState::Clicked) {
-            m_state.openPopup = 0;
-            popup.lastSelected = i;
-            if (selected) *selected = i;
-            return true;
-        }
-
-        y += PopupItemHeight;
-    }
-
-    return false;
-}
-
-void olcPGEX_TinyGUI::ShowPopup(const std::string& name, olc::vi2d position) {
-	auto id = std::hash<std::string>()(name);
-	auto&& pos = m_popups.find(id);
-	if (pos == m_popups.end()) {
-        return;
-	}
-
-	auto& popup = pos->second;
-	popup.position = position;
-
-    if (popup.position.x + popup.size.x > pge->ScreenWidth()) {
-		popup.position.x = pge->ScreenWidth() - popup.size.x;
-	}
-
-    if (popup.position.y + popup.size.y > pge->ScreenHeight()) {
-		popup.position.y = pge->ScreenHeight() - popup.size.y;
-	}
-
-    m_state.openPopup = id;
-}
-
-void olcPGEX_TinyGUI::ShowPopup(const std::string& name) {
-    ShowPopup(name, m_state.lastClickedWidgetPosition);
-}
-
-void olcPGEX_TinyGUI::OnBeforeUserCreate() {
-    m_rectStack.push_back(Rect{ 0, 0, pge->ScreenWidth(), pge->ScreenHeight() });
-
-    m_panelsLayer = pge->CreateLayer();
-    pge->EnableLayer(m_panelsLayer, true);
-
-    m_widgetsLayer = pge->CreateLayer();
-    pge->EnableLayer(m_widgetsLayer, true);
-
-    SetTargetLayer(m_widgetsLayer);
-
-    // create gui sprite
-    m_guiSprite = std::make_unique<olc::Sprite>(GuiMapWidth, GuiMapHeight);
-    m_guiDecal = std::make_unique<olc::Decal>(m_guiSprite.get());
-
-    uint16_t index = 0;
-    for (size_t y = 0; y < GuiMapHeight; y++) {
-        for (size_t x = 0; x < GuiMapWidth; x++) {
-            uint8_t msb = GuiMap[index++];
-            uint8_t lsb = GuiMap[index++];
-			uint16_t rgb565 = (lsb << 8) | msb;
-
-            // convert to RGB888
-            uint8_t r = ((rgb565 & 0b1111100000000000) >> 11);
-            uint8_t g = ((rgb565 & 0b0000011111100000) >> 5);
-            uint8_t b = ( rgb565 & 0b0000000000011111);
-            r = (r * 255) / 31;
-            g = (g * 255) / 63;
-            b = (b * 255) / 31;
-
-            uint8_t a = GuiMap[GuiMapAlphaChannelStart + (y * GuiMapWidth + x)];
-
-            m_guiSprite->SetPixel(x, y, olc::Pixel(r, g, b, a));
-		}
-	}
-    m_guiDecal->Update();
-}
-
-bool olcPGEX_TinyGUI::OnBeforeUserUpdate(float& fElapsedTime) {
-    m_state.mouseDown = pge->GetMouse(0).bHeld;
-    m_state.mouseDelta = pge->GetMousePos() - m_state.mousePos;
-	m_state.mousePos = pge->GetMousePos();
-
-    if (m_rectStack.empty())
-        m_rectStack.push_back(Rect{ 0, 0, pge->ScreenWidth(), pge->ScreenHeight() });
-
-    if (!m_state.mouseDown) m_state.hoveredId = 0;
-
-    for (auto&& [wid, widget] : m_widgets) {
-        widget.pressed = false;
-        widget.released = false;
-	}
-
-    pge->SetPixelMode(olc::Pixel::ALPHA);
-
-    pge->SetDrawTarget(nullptr);
-    pge->Clear(olc::BLANK);
-
-    pge->SetDrawTarget(m_panelsLayer);
-    pge->Clear(olc::BLANK);
-
-    pge->SetDrawTarget(m_widgetsLayer);
-    pge->Clear(olc::BLANK);
-
-    SetTargetLayer(m_widgetsLayer);
-
-    RenderDockingAreas();
-
-	return false;
-}
-
-void olcPGEX_TinyGUI::OnAfterUserUpdate(float fElapsedTime) {
-    // check frame clicks
-    std::vector<size_t> frames;
-    for (auto&& [id, frame] : m_frames) {
-		frames.push_back(id);
-	}
-
-    // sort by fid == frontMostPanelId, placing it at the top
-    std::sort(frames.begin(), frames.end(), [&](size_t a, size_t b) {
-		return a == m_state.frontMostPanelId;
-	});
-
-    if (!frames.empty()) {
-        for (auto fid : frames) {
-			auto& frame = m_frames[fid];
-            if (
-                m_state.mouseDown &&
-                frame.titleBounds.HasPoint(m_state.mousePos) &&
-                !frame.dragging &&
-                m_state.activeId == 0
-            ) {
-                m_state.activeId = fid;
-                m_state.frontMostPanelId = fid;
-                frame.dragging = true;
-                frame.dockId = 0;
-                m_state.clickedFrame = &frame;
-                break;
-            }
-		}
-
-        if (m_state.clickedFrame && !m_state.mouseDown) {
-            m_state.activeId = 0;
-
-            // docking logic
-            auto dockId = NearestDockingArea(m_state.clickedFrame->bounds);
-            if (dockId != size_t(-1) && IsDockingAreaFree(dockId)) {
-                Rect dockRect = m_dockingAreas[dockId];
-                m_state.clickedFrame->positionOffset.x = dockRect.x;
-                m_state.clickedFrame->positionOffset.y = dockRect.y;
-                m_state.clickedFrame->bounds.width = dockRect.width;
-                m_state.clickedFrame->bounds.height = dockRect.height;
-				m_state.clickedFrame->dockId = dockId;
-            }
-
-            m_state.clickedFrame->dragging = false;
-            m_state.clickedFrame = nullptr;
-		}
-    }
-
-    // docking highlight
-    if (m_state.clickedFrame) {
-        auto dockId = NearestDockingArea(m_state.clickedFrame->bounds);
-        if (dockId != size_t(-1) && IsDockingAreaFree(dockId)) {
-            DrawStyle9Patch(
-                GuiMapSprite::Selection,
-                olc::Pixel(18, 101, 255, 160),
-                m_dockingAreas[dockId]
-            );
+        switch (batch.type) {
+            case Batch::TypeScissor: {
+                /*if (batch.scissor.width == 0 || batch.scissor.height == 0) {
+					glDisable(GL_SCISSOR_TEST);
+                }
+                else {
+					glEnable(GL_SCISSOR_TEST);
+                    int y = screenSize.y - batch.scissor.y - batch.scissor.height;
+                    glScissor(batch.scissor.x, y, batch.scissor.width, batch.scissor.height);
+                }*/
+            } break;
+            case Batch::TypeLine: {
+				glDrawArrays(GL_LINES, batch.offset, batch.count);
+			} break;
+            case Batch::TypeQuad: {
+                glDrawArrays(GL_TRIANGLES, batch.offset, batch.count);
+            } break;
         }
     }
 
-    //////
-
-    RenderAll();
-    DrawPopups();
-
-    if (!m_state.mouseDown) {
-        m_state.activeId = 0;
-    }
-
-    m_rectStack.clear();
-
-    m_state.blinkTimer += fElapsedTime;
-    if (m_state.blinkTimer >= 0.4f) {
-        m_state.blink = !m_state.blink;
-        m_state.blinkTimer = 0.0f;
-	}
+    glScissor(scissorBox[0], scissorBox[1], scissorBox[2], scissorBox[3]);
+    m_batches.clear();
 }
 
-void olcPGEX_TinyGUI::BeginFrame(
-    const std::string& name,
-    const std::string& title,
-    const olc::vi2d& position,
-    int width,
-    bool collapsible, bool fixed
-) {
-    if (!m_frameStack.empty()) return; // Not possible to create frames inside frames
-
-    const int padding = 5;
-
-    auto fid = std::hash<std::string>()(name);
-    auto pos = m_frames.find(fid);
-    if (pos == m_frames.end()) {
-		m_frames[fid] = Frame{};
-		pos = m_frames.find(fid);
-        pos->second.positionOffset = position;
-	}
-
-    Frame& fram = pos->second;
-    fram.name = name;
-    fram.title = title;
-    fram.insertId = m_drawCommands.size();
-    fram.collapsible = collapsible;
-    fram.fixed = fixed;
-
-    auto [tw, th] = TextSize(title);
-
-    fram.bounds = Rect{ fram.positionOffset.x, fram.positionOffset.y, width, padding + FrameTitleHeight };
-    if (fram.dockId != 0) {
-        Rect dockRect = m_dockingAreas[fram.dockId];
-        fram.bounds.width = dockRect.width;
-        fram.bounds.height = dockRect.height;
-    }
-
-    fram.titleBounds = Rect{ fram.bounds.x + 2, fram.bounds.y + 2, fram.bounds.width - 4, FrameTitleHeight };
-
-    // adjust title bounds to exclude the collapse button
-    if (fram.collapsible && fram.dockId == 0) {
-        fram.titleBounds.width -= FrameTitleHeight;
-    }
-
-    m_frameStack.push_back(fid);
-
-    Rect widgetsRect = fram.bounds.Expand(-padding);
-    widgetsRect.y += fram.titleBounds.height;
-    widgetsRect.height -= fram.titleBounds.height;
-    PushRect(widgetsRect);
-
-    if (m_state.frontMostPanelId == fid) SetTargetLayer(m_panelsLayer);
-    else SetTargetLayer(m_widgetsLayer);
-}
-
-Rect olcPGEX_TinyGUI::EndFrame() {
-    const int padding = 5;
-
-    if (m_frameStack.empty()) return Rect{}; // Why are you calling this?
-
-    auto titleBgColor = PixelBrightness(baseColor, 0.3f);
-    auto light = GetBestForegroundColor(titleBgColor);
-    auto fid = m_frameStack.back();
-
-    Frame& frame = m_frames[fid];
-
-    Rect frameBounds = frame.bounds;
-    Rect titleBounds = frame.titleBounds;
-
-    bool docked = frame.dockId != 0;
-    if (!docked) {
-        frameBounds.height += PeekRect().y - frameBounds.y;
-        frameBounds.height -= FrameTitleHeight;
-    }
-
-    if (frame.collapsed && !docked) {
-        frameBounds.height = FrameTitleHeight + padding;
-    }
-
-    auto [tw, th] = TextSize(frame.title);
-    DrawText(
-        frame.title, light,
-        Rect{ frameBounds.x + 6, frameBounds.y + 2 + (FrameTitleHeight / 2 - th / 2), frameBounds.width - 4, FrameTitleHeight },
-        frame.insertId
-    );
-
-    DrawFillRect(
-        titleBgColor,
-        titleBounds,
-        frame.insertId
-    );
-
-    DrawStyle9Patch(
-        GuiMapSprite::Frame,
-        baseColor,
-        frameBounds,
-        0xFF,
-        frame.insertId
-    );
-
-    DrawStyle9Patch(
-        GuiMapSprite::Shadow,
-        baseColor,
-        Rect{ frameBounds.x + 3, frameBounds.y + 3, frameBounds.width, frameBounds.height },
-        0xFF,
-        frame.insertId
-    );
-
-    if (frame.collapsible && !docked) {
-        m_state.ignoreCollapsed = true;
-        Rect collapseButtonBounds = Rect{
-            frameBounds.x + frameBounds.width - FrameTitleHeight - 1,
-            frameBounds.y + 2,
-            FrameTitleHeight, FrameTitleHeight
-        };
-        int centerOff = FrameTitleHeight / 2 - 4;
-
-        if (Button(frame.name + "_collapse", collapseButtonBounds, "")) {
-            frame.collapsed = !frame.collapsed;
-        }
-        DrawStyleSprite(
-            frame.collapsed ? GuiMapSprite::ArrowDown : GuiMapSprite::ArrowUp,
-            GetBestForegroundColor(),
-            Rect{ collapseButtonBounds.x + centerOff - 1, collapseButtonBounds.y + centerOff + 1, 8, 8 }
-        );
-        m_state.ignoreCollapsed = false;
-    }
-
-    PopRect();
-    m_frameStack.pop_back();
-
-    frame.bounds = frameBounds;
-    
-    // moving logic
-    if (frame.dragging && !frame.fixed) {
-        frame.positionOffset.x += m_state.mouseDelta.x;
-        frame.positionOffset.y += m_state.mouseDelta.y;
-    }
-
-    SetTargetLayer(m_widgetsLayer);
-
-    return frameBounds;
-}
-
-void olcPGEX_TinyGUI::PushRect(Rect rect) {
-    if (CurrentFrameIsCollapsed()) return;
-	m_rectStack.push_back(rect);
-}
-
-Rect& olcPGEX_TinyGUI::PeekRect() {
-	return m_rectStack.back();
-}
-
-void olcPGEX_TinyGUI::PopRect() {
-    if (CurrentFrameIsCollapsed()) return;
-	m_rectStack.pop_back();
-}
-
-Rect olcPGEX_TinyGUI::RectCutLeft(int amount) {
-    if (CurrentFrameIsCollapsed()) return Rect{};
-    Rect& orig = PeekRect();
-    Rect rec{ orig.x, orig.y, amount, orig.height };
-    orig.x += amount;
-    orig.width -= amount;
-    return rec;
-}
-
-Rect olcPGEX_TinyGUI::RectCutRight(int amount) {
-    if (CurrentFrameIsCollapsed()) return Rect{};
-	Rect& orig = PeekRect();
-	Rect rec{ orig.x + orig.width - amount, orig.y, amount, orig.height };
-	orig.width -= amount;
-	return rec;
-}
-
-Rect olcPGEX_TinyGUI::RectCutTop(int amount) {
-    if (CurrentFrameIsCollapsed()) return Rect{};
-	Rect& orig = PeekRect();
-	Rect rec{ orig.x, orig.y, orig.width, amount };
-	orig.y += amount;
-	orig.height -= amount;
-	return rec;
-}
-
-Rect olcPGEX_TinyGUI::RectCutBottom(int amount) {
-    if (CurrentFrameIsCollapsed()) return Rect{};
-	Rect& orig = PeekRect();
-	Rect rec{ orig.x, orig.y + orig.height - amount, orig.width, amount };
-	orig.height -= amount;
-	return rec;
-}
-
-void olcPGEX_TinyGUI::AddDockingArea(const std::string& name, const Rect& rect) {
-    m_dockingAreas[utils::GetIDFromName(name)] = rect;
-}
-
-void olcPGEX_TinyGUI::AddDockingAreaLeft(const std::string& name, int size) {
-    PushRect(RectCutLeft(size));
-    AddDockingArea(name, PeekRect());
-    PopRect();
-}
-
-void olcPGEX_TinyGUI::AddDockingAreaRight(const std::string& name, int size) {
-    PushRect(RectCutRight(size));
-	AddDockingArea(name, PeekRect());
-	PopRect();
-}
-
-void olcPGEX_TinyGUI::AddDockingAreaTop(const std::string& name, int size) {
-    PushRect(RectCutTop(size));
-	AddDockingArea(name, PeekRect());
-	PopRect();
-}
-
-void olcPGEX_TinyGUI::AddDockingAreaBottom(const std::string& name, int size) {
-    PushRect(RectCutBottom(size));
-	AddDockingArea(name, PeekRect());
-	PopRect();
-}
-
-void olcPGEX_TinyGUI::AddDockingAreaRemainingSpace(const std::string& name) {
-    AddDockingArea(name, PeekRect());
-}
-
-olcPGEX_TinyGUI::Widget& olcPGEX_TinyGUI::GetWidget(const std::string& name, Rect bounds, bool blockInputByPopup) {
-    auto id = std::hash<std::string>()(name);
-
-    auto pos = m_widgets.find(id);
-    if (pos == m_widgets.end()) {
-        m_widgets[id] = Widget{};
-        pos = m_widgets.find(id);
-    }
-    auto& widget = pos->second;
-    widget.id = id;
-    widget.state = WidgetState::Idle;
-    widget.visible = true;
-    size_t parentFrameId = 0;
-
-    // is this widget inside of a collapsed frame?
-    if (!m_frameStack.empty()) {
-        auto& frame = m_frames[m_frameStack.back()];
-        parentFrameId = m_frameStack.back();
-        widget.visible = !frame.collapsed;
-    }
-    //
-
-    // we should receive no input if there's a frame on top of the area where we're trying to click
-    // so if there's a frame intersecting the widget bounds, and we try to click in both bounds, we should block the input
-
-    Frame* blockingFrame = nullptr;
-    for (auto&& [fid, frame] : m_frames) {
-        Rect totalBounds = frame.titleBounds.Union(frame.bounds);
-		if (totalBounds.Intersects(bounds) && m_state.frontMostPanelId == fid && m_state.frontMostPanelId != parentFrameId) {
-            //DrawStyle9Patch(GuiMapSprite::Selection, olc::RED, bounds.Expand(2));
-            //DrawStyle9Patch(GuiMapSprite::Selection, olc::GREEN, totalBounds.Expand(2));
-			blockingFrame = &frame;
-			break;
-		}
-	}
-
-    bool blockingFrameHasPoint =
-        blockingFrame &&
-        (blockingFrame->bounds.HasPoint(m_state.mousePos) || blockingFrame->titleBounds.HasPoint(m_state.mousePos));
-
-    bool blocked = blockInputByPopup && m_state.openPopup != 0;
-    if (bounds.HasPoint(m_state.mousePos) && !blockingFrameHasPoint && !blocked) {
-        m_state.hoveredId = id;
-        widget.state = WidgetState::Hovered;
-        if (m_state.activeId == 0 && m_state.mouseDown) {
-            m_state.activeId = id;
-            m_state.focusedId = id;
-            m_state.lastClickedWidgetPosition.x = bounds.x;
-            m_state.lastClickedWidgetPosition.y = bounds.y + bounds.height;
-            widget.state = WidgetState::Active;
-            widget.pressed = true;
-        }
+void BatchedRenderer::UpdateBuffers() {
+    glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
+    if (m_vertexCount != m_vertices.size()) {
+		glBufferData(GL_ARRAY_BUFFER, m_vertices.size() * sizeof(Vertex), m_vertices.data(), GL_DYNAMIC_DRAW);
     }
     else {
-        if (m_state.focusedId == id && m_state.mouseDown) {
-            m_state.focusedId = 0;
+        glBufferSubData(GL_ARRAY_BUFFER, 0, m_vertices.size() * sizeof(Vertex), m_vertices.data());
+    }
+
+	m_vertexCount = m_vertices.size();
+
+    m_vertices.clear();
+}
+
+bool BatchedRenderer::IsPreviousBatchIsCompatible(Batch::Type type, Texture* texture) {
+    if (m_batches.empty()) return false;
+	auto& lastBatch = m_batches.back();
+
+    if (lastBatch.type != type) return false;
+	if (lastBatch.texture != texture) return false;
+
+	return true;
+}
+
+BatchedRenderer::Batch* BatchedRenderer::GetLastBatch() {
+    if (m_batches.empty()) return nullptr;
+	return &m_batches.back();
+}
+
+BatchedRenderer::Batch* BatchedRenderer::GetNewBatch(Batch::Type type, uint32_t count, Texture* texture) {
+    if (!IsPreviousBatchIsCompatible(type, texture)) {
+        Batch batch{};
+        batch.offset = m_vertices.size();
+        batch.count = count;
+        batch.texture = texture;
+        batch.type = type;
+        m_batches.push_back(batch);
+        return &m_batches.back();
+    }
+
+    Batch* batch = GetLastBatch();
+    if (batch) {
+        batch->count += count;
+    }
+    return batch;
+}
+
+void Font::Load(const std::string& filename, float size) {
+    // read font file as byte array
+    std::ifstream file(filename, std::ios::binary);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open font file: " << filename << std::endl;
+        return;
+    }
+
+    file.seekg(0, std::ios::end);
+    size_t length = file.tellg();
+    file.seekg(0, std::ios::beg);
+
+    std::vector<uint8_t> buffer(length);
+    file.read(reinterpret_cast<char*>(buffer.data()), length);
+    file.close();
+
+    if (!stbtt_InitFont(&m_fontInfo, buffer.data(), 0)) {
+		std::cerr << "Failed to initialize font: " << filename << std::endl;
+		return;
+	}
+
+    std::vector<uint8_t> bitmap;
+    uint32_t textureSize = 32;
+    while (true) {
+        bitmap.resize(textureSize * textureSize);
+
+        stbtt_pack_context ctx;
+        stbtt_PackBegin(&ctx, bitmap.data(), textureSize, textureSize, 0, 1, nullptr);
+        stbtt_PackSetOversampling(&ctx, 1, 1);
+
+        if (!stbtt_PackFontRange(&ctx, buffer.data(), 0, size, 32, 96, m_chars)) {
+            stbtt_PackEnd(&ctx);
+            textureSize *= 2;
+        }
+        else {
+            stbtt_PackEnd(&ctx);
+			break;
         }
     }
 
-    if (m_state.activeId == id && m_state.hoveredId == id && !blocked) {
-        widget.state = WidgetState::Active;
-        if (!m_state.mouseDown) {
-            widget.released = true;
-            widget.state = WidgetState::Clicked;
-        }
+    std::vector<uint8_t> bitmapRGBA(textureSize * textureSize * 4);
+    for (size_t i = 0; i < bitmap.size(); i++) {
+		bitmapRGBA[i * 4 + 0] = 255;
+		bitmapRGBA[i * 4 + 1] = 255;
+		bitmapRGBA[i * 4 + 2] = 255;
+		bitmapRGBA[i * 4 + 3] = bitmap[i];
+	}
+
+    m_texture.LoadFromMemory(bitmapRGBA.data(), textureSize, textureSize, 4);
+
+    m_scale = stbtt_ScaleForPixelHeight(&m_fontInfo, size);
+
+    int descent, lineGap;
+    stbtt_GetFontVMetrics(&m_fontInfo, &m_ascent, &descent, &lineGap);
+
+    m_baseline = int(m_ascent * m_scale);
+    m_lineHeight = int((m_ascent - descent + lineGap) * m_scale);
+}
+
+#endif
+
+void Renderer::AddDrawCommand(DrawCommand cmd, uint32_t layer, size_t position) {
+    cmd.targetLayer = layer;
+    if (position < size_t(-1)) {
+        m_drawCommands.insert(m_drawCommands.begin() + position, cmd);
     }
-
-    return widget;
+    else {
+        m_drawCommands.push_back(cmd);
+    }
 }
 
-void olcPGEX_TinyGUI::DrawText(const std::string& text, olc::Pixel color, Rect bounds, size_t position) {
-    DrawCommand cmd{};
-	cmd.type = DrawCommandType::Text;
-	cmd.text = text;
-	cmd.color = color;
-	cmd.bounds = bounds;
-    AddDrawCommand(cmd, position);
+Renderer::Renderer() {
+    LoadGuiTexture();
+#ifndef OLC_PGE_APPLICATION
+    m_backend = std::make_unique<BatchedRenderer>();
+    m_font.Load("opensans.ttf", 16.0f);
+
+    std::string vert = R"(
+        #version 460 core
+		layout(location = 0) in vec2 aPos;
+		layout(location = 1) in vec4 aColor;
+		layout(location = 2) in vec2 aUV;
+
+		out vec4 vColor;
+		out vec2 vUV;
+
+        uniform mat4 uProjection;
+
+		void main() {
+			gl_Position = uProjection * vec4(aPos, 0.0, 1.0);
+			vColor = aColor;
+			vUV = aUV;
+		}
+    )";
+
+    std::string frag = R"(
+		#version 460 core
+        in vec4 vColor;
+        in vec2 vUV;
+        
+        out vec4 FragColor;
+
+        uniform sampler2D uTexture;
+        uniform bool uUseTexture;
+
+        void main() {
+            vec4 color = vColor;
+            if (uUseTexture) {
+				color *= texture(uTexture, vUV);
+			}
+			FragColor = color;
+		}
+	)";
+
+	m_shader
+        .AddSource(Shader::Type::Vertex, vert)
+        .AddSource(Shader::Type::Fragment, frag)
+        .Link();
+
+#endif
 }
 
-void olcPGEX_TinyGUI::DrawFillRect(olc::Pixel color, Rect bounds, size_t position) {
+void Renderer::DrawText(const std::string& text, Color color, Rect bounds, uint32_t layer, size_t position) {
     DrawCommand cmd{};
-	cmd.type = DrawCommandType::FillRect;
-	cmd.color = color;
-	cmd.bounds = bounds;
-    AddDrawCommand(cmd, position);
+    cmd.type = DrawCommandType::Text;
+    cmd.text = text;
+    cmd.color = color;
+    cmd.bounds = bounds;
+    AddDrawCommand(cmd, layer, position);
 }
 
-void olcPGEX_TinyGUI::DrawLine(olc::Pixel color, olc::vi2d a, olc::vi2d b, size_t position) {
+void Renderer::DrawFillRect(Color color, Rect bounds, uint32_t layer, size_t position) {
     DrawCommand cmd{};
-	cmd.type = DrawCommandType::Line;
-	cmd.color = color;
-	cmd.bounds = Rect{ a.x, a.y, b.x, b.y };
-    AddDrawCommand(cmd, position);
+    cmd.type = DrawCommandType::FillRect;
+    cmd.color = color;
+    cmd.bounds = bounds;
+    AddDrawCommand(cmd, layer, position);
 }
 
-void olcPGEX_TinyGUI::DrawStyleSprite(GuiMapSprite sprite, olc::Pixel color, Rect bounds, size_t position) {
+void Renderer::DrawLine(Color color, Vector2i a, Vector2i b, uint32_t layer, size_t position) {
     DrawCommand cmd{};
-	cmd.type = DrawCommandType::StyleSprite;
-	cmd.sprite = sprite;
-	cmd.color = color;
-	cmd.bounds = bounds;
-    AddDrawCommand(cmd, position);
+    cmd.type = DrawCommandType::Line;
+    cmd.color = color;
+    cmd.bounds = Rect{ a.x, a.y, b.x, b.y };
+    AddDrawCommand(cmd, layer, position);
 }
 
-void olcPGEX_TinyGUI::DrawStyle9Patch(GuiMapSprite sprite, olc::Pixel color, Rect bounds, uint8_t flags, size_t position) {
+void Renderer::DrawStyleSprite(GuiMapSprite sprite, Color color, Rect bounds, uint32_t layer, size_t position) {
     DrawCommand cmd{};
-	cmd.type = DrawCommandType::Style9Patch;
-	cmd.sprite = sprite;
-	cmd.color = color;
-	cmd.bounds = bounds;
+    cmd.type = DrawCommandType::StyleSprite;
+    cmd.sprite = sprite;
+    cmd.color = color;
+    cmd.bounds = bounds;
+    AddDrawCommand(cmd, layer, position);
+}
+
+void Renderer::DrawStyle9Patch(GuiMapSprite sprite, Color color, Rect bounds, uint32_t layer, uint8_t flags, size_t position) {
+    DrawCommand cmd{};
+    cmd.type = DrawCommandType::Style9Patch;
+    cmd.sprite = sprite;
+    cmd.color = color;
+    cmd.bounds = bounds;
     cmd.ninePatchFlags = flags;
-    AddDrawCommand(cmd, position);
+    AddDrawCommand(cmd, layer, position);
 }
 
-void olcPGEX_TinyGUI::DrawImage(olc::Decal* image, Rect bounds, size_t position) {
+void Renderer::DrawImage(Texture* image, Rect bounds, uint32_t layer, size_t position) {
     DrawCommand cmd{};
-	cmd.type = DrawCommandType::Image;
-	cmd.image = image;
-	cmd.bounds = bounds;
-    AddDrawCommand(cmd, position);
+    cmd.type = DrawCommandType::Image;
+    cmd.image = image;
+    cmd.bounds = bounds;
+    AddDrawCommand(cmd, layer, position);
 }
 
-void olcPGEX_TinyGUI::EnableClip(Rect bounds) {
+void Renderer::EnableClip(Rect bounds, uint32_t layer) {
     DrawCommand cmd{};
     cmd.type = DrawCommandType::EnableClip;
     cmd.bounds = bounds;
-    AddDrawCommand(cmd);
+    AddDrawCommand(cmd, layer);
 }
 
-void olcPGEX_TinyGUI::DisableClip() {
+void Renderer::DisableClip() {
     DrawCommand cmd{};
-	cmd.type = DrawCommandType::DisableClip;
-	AddDrawCommand(cmd);
+    cmd.type = DrawCommandType::DisableClip;
+    AddDrawCommand(cmd, 0);
 }
 
-olcPGEX_TinyGUI::Widget& olcPGEX_TinyGUI::GetWidgetByName(const std::string& name) {
-    auto id = std::hash<std::string>()(name);
-    auto pos = m_widgets.find(id);
-    if (pos == m_widgets.end()) {
-        m_widgets[id] = Widget{};
-        pos = m_widgets.find(id);
-    }
-    return pos->second;
-}
-
-std::pair<int, int> olcPGEX_TinyGUI::TextSize(const std::string& text) {
-    olc::vi2d sz = pge->GetTextSizeProp(text);
-    return { sz.x, sz.y };
-}
-
-olc::Pixel olcPGEX_TinyGUI::PixelBrightness(olc::Pixel color, float amount) {
-    auto fnPerc = [amount](float value) {
-        return std::clamp(value * amount, 0.0f, 1.0f);
-    };
-
-    const float r = float(color.r) / 255.0f;
-    const float g = float(color.g) / 255.0f;
-    const float b = float(color.b) / 255.0f;
-    const float a = float(color.a) / 255.0f;
-    return olc::PixelF(fnPerc(r), fnPerc(g), fnPerc(b), a);
-}
-
-void olcPGEX_TinyGUI::DrawStyle9Patch(Rect bounds, olc::Pixel color, GuiMapSprite sprite, uint8_t flags) {
+void Renderer::DrawStyle9Patch(Rect bounds, Color color, GuiMapSprite sprite, uint8_t flags) {
     const int spriteWidth = 8;
     const int spriteHeight = 8;
     const int padding = 3;
-    const int numCols = m_guiDecal->sprite->width / spriteWidth;
+    const int numCols = m_guiTexture.Size().x / spriteWidth;
 
     int spriteIndex = int(sprite);
     Rect src{
         (spriteIndex % numCols) * spriteWidth,
-		(spriteIndex / numCols) * spriteHeight,
+        (spriteIndex / numCols) * spriteHeight,
         spriteWidth, spriteHeight
     };
 
     auto fnDraw = [this, color](Rect dst, Rect src) {
-        olc::vf2d pos = { float(dst.x), float(dst.y) };
-        olc::vf2d size = { float(dst.width), float(dst.height) };
-        olc::vf2d srcPos = { float(src.x), float(src.y) };
-        olc::vf2d srcSize = { float(src.width), float(src.height) };
-        pge->DrawPartialDecal(pos, size, m_guiDecal.get(), srcPos, srcSize, color);
+        m_backend->DrawPartialQuad(dst, src, color, &m_guiTexture);
     };
 
 #define IsBitSet(x, b) ((x & (1 << b)) != 0)
@@ -1817,10 +1438,10 @@ void olcPGEX_TinyGUI::DrawStyle9Patch(Rect bounds, olc::Pixel color, GuiMapSprit
 #undef IsBitSet
 }
 
-void olcPGEX_TinyGUI::DrawStyleSprite(Rect bounds, olc::Pixel color, GuiMapSprite sprite) {
+void Renderer::DrawStyleSprite(Rect bounds, Color color, GuiMapSprite sprite) {
     const int spriteWidth = 8;
-	const int spriteHeight = 8;
-    const int numCols = m_guiDecal->sprite->width / spriteWidth;
+    const int spriteHeight = 8;
+    const int numCols = m_guiTexture.Size().x / spriteWidth;
 
     int spriteIndex = int(sprite);
     Rect src{
@@ -1829,18 +1450,1220 @@ void olcPGEX_TinyGUI::DrawStyleSprite(Rect bounds, olc::Pixel color, GuiMapSprit
         spriteWidth, spriteHeight
     };
 
-    auto fnDraw = [this, color](Rect dst, Rect src) {
-        olc::vf2d pos = { float(dst.x), float(dst.y) };
-        olc::vf2d size = { float(dst.width), float(dst.height) };
-        olc::vf2d srcPos = { float(src.x), float(src.y) };
-        olc::vf2d srcSize = { float(src.width), float(src.height) };
-        pge->DrawPartialDecal(pos, size, m_guiDecal.get(), srcPos, srcSize, color);
-    };
-
-    fnDraw(bounds, src);
+    m_backend->DrawPartialQuad(bounds, src, color, &m_guiTexture);
 }
 
-GuiMapSprite olcPGEX_TinyGUI::WidgetStateToSprite(WidgetState state) {
+Vector2ui Renderer::GetScreenSize() const {
+#ifndef OLC_PGE_APPLICATION
+    return m_screenSize;
+#else
+    return { m_pge->ScreenWidth(), m_pge->ScreenHeight() };
+#endif
+}
+
+void Renderer::SetScreenSize(Vector2ui size) {
+#ifndef OLC_PGE_APPLICATION
+	m_screenSize = size;
+#endif
+}
+
+Vector2i Renderer::GetTextSize(const std::string& text) {
+    return m_backend->GetTextSize(&m_font, text);
+}
+
+
+
+
+void Renderer::RenderAll() {
+    std::vector<Rect> scissorStack;
+
+    uint32_t prevDrawTarget = 0;
+    for (const auto& cmd : m_drawCommands) {
+        if (prevDrawTarget != cmd.targetLayer) {
+            m_backend->SetDrawTarget(cmd.targetLayer);
+            prevDrawTarget = cmd.targetLayer;
+        }
+
+        switch (cmd.type) {
+            case DrawCommandType::Text: {
+#ifdef OLC_PGE_APPLICATION
+                m_pge->DrawStringPropDecal(
+                    { float(cmd.bounds.x), float(cmd.bounds.y) },
+                    cmd.text,
+                    cmd.color
+                );
+#else
+                BatchedRenderer* ren = dynamic_cast<BatchedRenderer*>(m_backend.get());
+                ren->DrawText(
+                    &m_font,
+                    { float(cmd.bounds.x), float(cmd.bounds.y) },
+                    cmd.text,
+                    cmd.color
+                );
+#endif
+            } break;
+			case DrawCommandType::FillRect:
+                m_backend->DrawQuad(
+					cmd.bounds,
+					cmd.color,
+					nullptr
+				);
+				break;
+			case DrawCommandType::Line:
+                m_backend->DrawLine(
+                    { cmd.bounds.x, cmd.bounds.y },
+                    { cmd.bounds.width, cmd.bounds.height },
+                    cmd.color
+                );
+				break;
+            case DrawCommandType::Style9Patch:
+				DrawStyle9Patch(cmd.bounds, cmd.color, cmd.sprite, cmd.ninePatchFlags);
+				break;
+			case DrawCommandType::StyleSprite:
+                DrawStyleSprite(cmd.bounds, cmd.color, cmd.sprite);
+				break;
+            case DrawCommandType::Image: {
+                m_backend->DrawQuad(
+					cmd.bounds,
+					Color(255, 255, 255),
+					cmd.image
+				);
+            } break;
+            case DrawCommandType::EnableClip: {
+                GLint rect[4];
+                glGetIntegerv(GL_SCISSOR_BOX, rect);
+                scissorStack.push_back(Rect{ rect[0], rect[1], rect[2], rect[3] });
+
+                m_backend->EnableScissor(cmd.bounds);
+            } break;
+            case DrawCommandType::DisableClip: {
+                if (scissorStack.empty()) continue;
+                auto& rect = scissorStack.back();
+                scissorStack.pop_back();
+                m_backend->DisableScissor();
+			} break;
+            default: break;
+		}
+	}
+	m_drawCommands.clear();
+
+    m_shader.Use();
+    m_backend->Render(&m_shader, GetScreenSize());
+}
+
+void Renderer::LoadGuiTexture() {
+    uint8_t* pixelData = new uint8_t[GuiMapWidth * GuiMapHeight * 4];
+
+    uint16_t index = 0, dataIndex = 0;
+    for (size_t y = 0; y < GuiMapHeight; y++) {
+        for (size_t x = 0; x < GuiMapWidth; x++) {
+            uint8_t msb = GuiMap[index++];
+            uint8_t lsb = GuiMap[index++];
+            uint16_t rgb565 = (lsb << 8) | msb;
+
+            // convert to RGB888
+            uint8_t r = ((rgb565 & 0b1111100000000000) >> 11);
+            uint8_t g = ((rgb565 & 0b0000011111100000) >> 5);
+            uint8_t b =  (rgb565 & 0b0000000000011111);
+            r = (r * 255) / 31;
+            g = (g * 255) / 63;
+            b = (b * 255) / 31;
+
+            uint8_t a = GuiMap[GuiMapAlphaChannelStart + (y * GuiMapWidth + x)];
+
+            pixelData[dataIndex++] = r;
+            pixelData[dataIndex++] = g;
+            pixelData[dataIndex++] = b;
+            pixelData[dataIndex++] = a;
+        }
+    }
+
+    m_guiTexture.LoadFromMemory(pixelData, GuiMapWidth, GuiMapHeight, 4);
+    delete[] pixelData;
+}
+
+void TinyGUI::RenderDockingAreas() {
+    for (const auto& [id, rect] : m_dockingAreas) {
+        if (!IsDockingAreaFree(id)) continue;
+        m_renderer.DrawStyle9Patch(
+            GuiMapSprite::Selection,
+            Color(0, 0, 0, 110),
+            rect,
+            0
+        );
+	}
+}
+
+bool TinyGUI::CurrentFrameIsCollapsed() {
+    if (m_state.ignoreCollapsed) return false;
+    if (m_frameStack.empty()) return false;
+    return m_frames[m_frameStack.back()].collapsed;
+}
+
+Rect Rect::Expand(int amount) {
+	Rect rec = *this;
+	rec.x -= amount;
+	rec.y -= amount;
+	rec.width += amount * 2;
+	rec.height += amount * 2;
+	return rec;
+}
+
+bool Rect::Intersects(const Rect& other) const {
+    return x < other.x + other.width &&
+        x + width > other.x &&
+        y < other.y + other.height &&
+        y + height > other.y;
+}
+
+Rect Rect::Union(const Rect& other) const {
+    int x1 = std::min(x, other.x);
+	int y1 = std::min(y, other.y);
+	int x2 = std::max(x + width, other.x + other.width);
+	int y2 = std::max(y + height, other.y + other.height);
+	return { x1, y1, x2 - x1, y2 - y1 };
+}
+
+Rect Rect::Intersection(const Rect& other) const {
+    // if there is no intersection
+    if (!Intersects(other)) return { 0, 0, 0, 0 };
+
+    int x1 = std::max(x, other.x);
+    int y1 = std::max(y, other.y);
+    int x2 = std::min(x + width, other.x + other.width);
+    int y2 = std::min(y + height, other.y + other.height);
+    return { x1, y1, x2 - x1, y2 - y1 };
+}
+
+int Rect::DistanceToRect(const Rect& other) const {
+    //if (Intersects(other)) return 0;
+
+	int dx = 0, dy = 0;
+	if (x + width < other.x) dx = other.x - (x + width);
+	else if (x > other.x + other.width) dx = x - (other.x + other.width);
+
+	if (y + height < other.y) dy = other.y - (y + height);
+	else if (y > other.y + other.height) dy = y - (other.y + other.height);
+
+	return std::max(dx, dy);
+}
+
+bool Rect::HasPoint(int x, int y) const {
+	return x >= this->x && x < this->x + this->width && y >= this->y && y < this->y + this->height;
+}
+
+bool Rect::HasPoint(const Vector2i& pos) const {
+	return HasPoint(pos.x, pos.y);
+}
+
+void TinyGUI::Label(
+    Rect bounds,
+    const std::string& text,
+    int alignment,
+    const std::optional<Color>& bg,
+    bool wordWrap
+) {
+    if (CurrentFrameIsCollapsed()) return;
+
+    if (bg.has_value()) {
+        m_renderer.DrawFillRect(*bg, bounds, m_state.targetLayer);
+    }
+
+    const int defaultLineSpacing = 2;
+
+    Color col = GetBestForegroundColor(bg);
+
+    std::vector<char> stringArray(text.begin(), text.end());
+    std::vector<Word> words;
+
+    while (!stringArray.empty()) {
+        if (::isspace(stringArray[0]) && stringArray[0] != '\n' && stringArray[0] != '\t') {
+			words.push_back({ " ", Word::TypeSpace });
+			stringArray.erase(stringArray.begin());
+        }
+        else if (stringArray[0] == '\t') {
+			words.push_back({ "\t", Word::TypeTab });
+			stringArray.erase(stringArray.begin());
+        }
+        else if (stringArray[0] == '\n') {
+			words.push_back({ "\n", Word::TypeNewLine });
+			stringArray.erase(stringArray.begin());
+        }
+        else {
+			std::string word;
+            while (!stringArray.empty() && !::isspace(stringArray[0])) {
+				word += stringArray[0];
+				stringArray.erase(stringArray.begin());
+			}
+			words.push_back({ word, Word::TypeText });
+		}
+    }
+
+    int totalHeight = 0;
+    int lineHeightAvg = 0;
+    std::vector<int> lineWidths;
+
+    // compute total height and max width
+    int tempWidth = 0, tempHeight = 0;
+    for (const auto& word : words) {
+        if (word.type == Word::TypeNewLine) {
+            lineHeightAvg += tempHeight;
+			totalHeight += tempHeight;
+			tempHeight = 0;
+            lineWidths.push_back(tempWidth);
+			tempWidth = 0;
+		}
+        else {
+			auto [tw, th] = m_renderer.GetTextSize(word.text).AsPair();
+
+            if (word.type == Word::TypeTab) {
+                tw *= 4;
+			}
+
+            if (tempWidth + tw > bounds.width) {
+                if (wordWrap) {
+                    lineHeightAvg += tempHeight;
+                    totalHeight += tempHeight;
+                    tempHeight = 0;
+                    lineWidths.push_back(tempWidth);
+                    tempWidth = 0;
+                }
+            }
+            tempWidth += tw;
+			tempHeight = std::max(tempHeight, th + defaultLineSpacing);
+		}
+	}
+    lineWidths.push_back(tempWidth);
+
+    if (lineHeightAvg <= 0) {
+        auto [tw, th] = m_renderer.GetTextSize(words[0].text).AsPair();
+        lineHeightAvg = th;
+    }
+    else {
+        lineHeightAvg /= lineWidths.size();
+    }
+
+    int offY = 0;
+
+    // alignment offset
+    uint32_t alignX = alignment & 0x0F;
+    uint32_t alignY = alignment & 0xF0;
+
+    switch (alignY) {
+        case AlignMiddle: offY = bounds.height / 2 - totalHeight / 2; break;
+        case AlignBottom: offY = bounds.height - totalHeight; break;
+        default: break;
+    }
+
+    int currentX = 0, currentY = 0;
+    int lineIndex = 0;
+    while (!words.empty()) {
+        Word word = words[0];
+        words.erase(words.begin());
+
+        switch (word.type) {
+            case Word::TypeText: {
+                auto [tw, th] = m_renderer.GetTextSize(word.text).AsPair();
+                
+                if (currentX + tw > bounds.width) {
+                    if (wordWrap) {
+                        currentX = 0;
+                        currentY += lineHeightAvg;
+                        lineIndex++;
+                    }
+                    else {
+						break;
+					}
+                }
+
+                int offX = 0;
+                switch (alignX) {
+                    case AlignCenter: offX = bounds.width / 2 - lineWidths[lineIndex] / 2; break;
+                    case AlignRight: offX = bounds.width - lineWidths[lineIndex]; break;
+                    default: break;
+                }
+
+                m_renderer.DrawText(
+                    word.text,
+                    col,
+                    { bounds.x + currentX + offX, bounds.y + currentY + offY, bounds.width, bounds.height },
+                    m_state.targetLayer
+                );
+
+                currentX += tw;
+			} break;
+            case Word::TypeSpace: {
+                auto [tw, th] = m_renderer.GetTextSize(" ").AsPair();
+                currentX += tw;
+			} break;
+            case Word::TypeTab: {
+                auto [tw, th] = m_renderer.GetTextSize(" ").AsPair();
+                currentX += tw * 2;
+			} break;
+            case Word::TypeNewLine: {
+				currentX = 0;
+				currentY += lineHeightAvg;
+                lineIndex++;
+			} break;
+        }
+    }
+}
+
+bool TinyGUI::Button(const std::string& name, Rect bounds, const std::string& text, const std::optional<Color>& color) {
+    if (CurrentFrameIsCollapsed()) return false;
+    
+    auto& wid = GetWidget(name, bounds);
+    m_renderer.DrawStyle9Patch(WidgetStateToSprite(wid.state), color.value_or(baseColor), bounds, m_state.targetLayer);
+
+    auto [tw, th] = m_renderer.GetTextSize(text).AsPair();
+
+    Color textColor = GetBestForegroundColor(color);
+    if (wid.state == WidgetState::Active) {
+        textColor = { 255, 255, 255, 255 };
+	}
+
+    if (color.has_value()) {
+        Rect innerBounds = bounds.Expand(-3);
+        m_renderer.DrawFillRect(color.value(), innerBounds, m_state.targetLayer);
+	}
+
+    m_renderer.DrawText(
+        text,
+		textColor,
+		{ bounds.x + bounds.width / 2 - tw / 2, bounds.y + bounds.height / 2 - th / 2, bounds.width, bounds.height },
+        m_state.targetLayer
+    );
+
+    return wid.state == WidgetState::Clicked;
+}
+
+bool TinyGUI::Toggle(const std::string& name, Rect bounds, const std::string& text, bool& value) {
+    if (CurrentFrameIsCollapsed()) return false;
+    
+    auto& wid = GetWidget(name, bounds);
+    m_renderer.DrawStyle9Patch(WidgetStateToSprite(!value ? wid.state : WidgetState::Active), baseColor, bounds, m_state.targetLayer);
+
+    if (wid.state == WidgetState::Clicked) {
+        value = !value;
+    }
+
+    auto [tw, th] = m_renderer.GetTextSize(text).AsPair();
+
+    Color textColor = GetBestForegroundColor();
+    if (wid.state == WidgetState::Active) {
+        textColor = { 255, 255, 255, 255 };
+    }
+
+    m_renderer.DrawText(
+        text,
+        value ? Color{ 255, 255, 255, 255 } : textColor,
+        Rect{ bounds.x + bounds.width / 2 - tw / 2, bounds.y + bounds.height / 2 - th / 2, bounds.width, bounds.height },
+        m_state.targetLayer
+    );
+
+    return wid.state == WidgetState::Clicked;
+}
+
+bool TinyGUI::Slider(
+    const std::string& name, Rect bounds,
+    int& value, int min, int max, int step,
+    const std::optional<Color>& bg
+) {
+    if (CurrentFrameIsCollapsed()) return false;
+    return SliderImpl<int>(name, bounds, value, min, max, step, bg);
+}
+
+bool TinyGUI::SliderF(
+    const std::string& name,
+    Rect bounds,
+    float& value, float min, float max, float step,
+    const std::optional<Color>& bg
+) {
+    if (CurrentFrameIsCollapsed()) return false;
+    return SliderImpl<float>(name, bounds, value, min, max, step, bg);
+}
+
+bool TinyGUI::Spinner(
+    const std::string& name,
+    Rect bounds,
+    int& value, int min, int max, int step,
+    const std::string& fmt,
+    const std::optional<Color>& bg
+) {
+    if (CurrentFrameIsCollapsed()) return false;
+    return SpinnerImpl<int>(
+		name, bounds,
+		[&](int& val, int inc) { val += inc; },
+        value, min, max, step, fmt, bg
+	);
+}
+
+bool TinyGUI::SpinnerF(
+    const std::string& name,
+    Rect bounds,
+    float& value, float min, float max, float step,
+    const std::string& fmt,
+    const std::optional<Color>& bg
+) {
+    if (CurrentFrameIsCollapsed()) return false;
+    return SpinnerImpl<float>(
+		name, bounds,
+		[&](float& val, float inc) { val += inc; },
+        value, min, max, step, fmt, bg
+	);
+}
+
+bool TinyGUI::EditBox(const std::string& name, Rect bounds, std::string& text) {
+    if (CurrentFrameIsCollapsed()) return false;
+    
+    auto& wid = GetWidget(name, bounds);
+
+    const auto light = Color{ 255, 255, 255, 255 };
+    bool textChanged = false;
+    bool focused = m_state.focusedId == wid.id;
+
+    m_renderer.DrawStyle9Patch(GuiMapSprite::ButtonActive, baseColor, bounds, m_state.targetLayer);
+
+    if (focused /*&& !pge->IsTextEntryEnabled()*/) {
+        /*pge->TextEntryEnable(true, text);*/
+    }
+
+    // text entry
+    if (focused) {
+        /*textChanged = pge->TextEntryGetString() != text;
+        text = pge->TextEntryGetString();*/
+    }
+
+    /*auto sz = pge->GetTextSizeProp(text.substr(0, pge->TextEntryGetCursor()));*/
+    int cursorX = bounds.x + 4/* + sz.x*/;
+    int textViewOffsetX = 0;
+
+    // cursor is out of bounds?
+    if (cursorX - textViewOffsetX > (bounds.x + bounds.width - 4) - 8 && focused) {
+		textViewOffsetX = cursorX - (bounds.x + bounds.width - 4) + 8;
+	}
+
+    auto [tw, th] = m_renderer.GetTextSize(text).AsPair();
+
+    int textX = bounds.x + 4 - textViewOffsetX;
+    m_renderer.EnableClip(bounds.Expand(-1), m_state.targetLayer);
+    m_renderer.DrawText(text, light, Rect{ textX, bounds.y + bounds.height / 2 - th / 2, bounds.width, bounds.height }, m_state.targetLayer);
+    m_renderer.DisableClip();
+
+    // draw cursor
+    if (focused && m_state.blink) {
+        m_renderer.DrawText("_", light, { cursorX - textViewOffsetX, bounds.y + bounds.height / 2/* - sz.y / 2*/, 1, 1 }, m_state.targetLayer);
+    }
+
+    if (!focused/* && pge->IsTextEntryEnabled()*/) {
+        /*pge->TextEntryEnable(false);*/
+	}
+
+    return textChanged;
+}
+
+void TinyGUI::Image(const std::string& name, Rect bounds, Texture* texture) {
+    if (CurrentFrameIsCollapsed()) return;
+    
+    auto id = std::hash<std::string>()(name);
+    m_renderer.DrawStyle9Patch(GuiMapSprite::ButtonActive, baseColor, bounds, m_state.targetLayer);
+
+    auto size = texture->Size();
+
+	// calculate image rect maintain aspect ratio 
+    float aspect = 1.0f;
+    if (size.x > size.y) {
+        aspect = float(size.y) / size.x;
+	}
+	else {
+		aspect = float(size.x) / size.y;
+	}
+
+    int width = bounds.width - 4;
+	int height = int(width * aspect);
+
+	if (height > bounds.height - 4) {
+		height = bounds.height - 4;
+		width = int(height / aspect);
+	}
+
+	int x = bounds.x + bounds.width / 2 - width / 2;
+	int y = bounds.y + bounds.height / 2 - height / 2;
+
+    m_renderer.DrawImage(texture, { x, y, width, height }, m_state.targetLayer);
+}
+
+void TinyGUI::TabBar(const std::string& name, Rect bounds, std::string* tabs, size_t numTabs, size_t& selected) {
+    if (CurrentFrameIsCollapsed()) return;
+    
+    const int nextButtonWidth = 16;
+
+    auto fg = GetBestForegroundColor();
+
+    auto id = std::hash<std::string>()(name);
+    auto pos = m_tabBars.find(id);
+    if (pos == m_tabBars.end()) {
+		m_tabBars[id] = TabBarState();
+		pos = m_tabBars.find(id);
+	}
+
+    auto& tabBar = pos->second;
+
+    std::vector<Rect> tabBounds;
+
+    uint32_t startTab = tabBar.startIndex;
+    uint32_t numVisibleTabs = 0;
+
+    auto fnDrawTab = [&](Rect tabRect, size_t index, int offsetY) {
+        auto [tw, th] = m_renderer.GetTextSize(tabs[index]).AsPair();
+
+        auto wid = GetWidget(name + "_tab" + std::to_string(index), tabRect);
+        if (wid.state == WidgetState::Clicked) {
+            selected = index;
+        }
+
+        tabRect.y += offsetY;
+        tabRect.height -= offsetY;
+
+        m_renderer.DrawStyle9Patch(
+            GuiMapSprite::ButtonIdle,
+            baseColor,
+            tabRect,
+            m_state.targetLayer,
+            0b00011111
+        );
+
+        m_renderer.DrawText(
+            tabs[index],
+            fg,
+            {
+                tabRect.x + tabRect.width / 2 - tw / 2,
+                tabRect.y + tabRect.height / 2 - th / 2,
+                tabRect.width, tabRect.height
+            },
+            m_state.targetLayer
+        );
+    };
+
+    Rect selectedTabRect{};
+    int offX = 3;
+    for (size_t i = tabBar.startIndex; i < numTabs; i++) {
+        auto [tw, th] = m_renderer.GetTextSize(tabs[i]).AsPair();
+        Rect tabRect{
+			bounds.x + offX,
+			bounds.y,
+			tw + 10,
+			bounds.height + 3
+		};
+
+        if (offX + tabRect.width > bounds.width - nextButtonWidth * 2)
+			break;
+
+        offX += tabRect.width - 3;
+
+        // draw except selected
+        if (i == selected) {
+            selectedTabRect = tabRect;
+        } else fnDrawTab(tabRect, i, 4);
+
+        numVisibleTabs++;
+	}
+
+    // draw selected tab
+    if (selected >= tabBar.startIndex && selected < tabBar.startIndex + numVisibleTabs)
+        fnDrawTab(selectedTabRect, selected, 0);
+
+    if (numVisibleTabs < numTabs) {
+		// draw next button
+		Rect nextButton{
+			bounds.x + bounds.width - nextButtonWidth,
+			bounds.y + 4,
+			nextButtonWidth,
+			bounds.height - 4
+		};
+
+		if (Button(name + "_next", nextButton, "")) {
+			tabBar.startIndex++;
+			tabBar.startIndex = std::clamp(tabBar.startIndex, uint32_t(0), uint32_t(numTabs) - numVisibleTabs);
+		}
+        m_renderer.DrawStyleSprite(
+            GuiMapSprite::ArrowRight,
+            GetBestForegroundColor(),
+            Rect{ nextButton.x + nextButton.width / 2 - 4, nextButton.y + nextButton.height / 2 - 4 + 1, 8, 8 },
+            m_state.targetLayer
+        );
+
+		// draw prev button
+		Rect prevButton{
+			bounds.x + bounds.width - nextButtonWidth * 2,
+			bounds.y + 4,
+			nextButtonWidth,
+			bounds.height - 4
+		};
+
+		if (Button(name + "_prev", prevButton, "")) {
+			tabBar.startIndex--;
+			tabBar.startIndex = std::clamp(tabBar.startIndex, uint32_t(0), uint32_t(numTabs) - numVisibleTabs);
+		}
+        m_renderer.DrawStyleSprite(
+			GuiMapSprite::ArrowLeft,
+			GetBestForegroundColor(),
+			Rect{ prevButton.x + prevButton.width / 2 - 4, prevButton.y + prevButton.height / 2 - 4 + 1, 8, 8 },
+            m_state.targetLayer
+		);
+	}
+
+    m_renderer.DrawLine(
+        Color{ 0, 0, 0, 255 },
+        { bounds.x, bounds.y + bounds.height },
+        { bounds.x + bounds.width, bounds.y + bounds.height },
+        m_state.targetLayer
+    );
+}
+
+bool TinyGUI::MakePopup(
+    const std::string& name,
+    std::string* items, size_t numItems, size_t* selected
+) {
+    auto id = std::hash<std::string>()(name);
+    auto&& pos = m_popups.find(id);
+    if (pos == m_popups.end()) {
+        m_popups[id] = Popup();
+        pos = m_popups.find(id);
+    }
+
+    auto& popup = pos->second;
+    popup.name = name;
+    popup.items = std::vector<std::string>(items, items + numItems);
+
+    int width = 0, height = 0;
+    for (size_t i = 0; i < numItems; i++) {
+        auto item = items[i];
+
+        width = std::max(width, m_renderer.GetTextSize(item).x);
+
+        if (item.find_first_not_of('-') == std::string::npos) {
+            height += PopupItemHeight / 2;
+        }
+        else {
+            height += PopupItemHeight;
+        }
+    }
+
+    Rect bounds{ popup.position.x, popup.position.y, width + 6, height + 4 };
+
+    popup.size = bounds.Size();
+
+    if (m_state.openPopup != id) return false;
+
+    if (m_state.mouseDown && !bounds.HasPoint(m_state.mousePos)) {
+        m_state.openPopup = 0;
+        return false;
+    }
+
+    int y = bounds.y + 2;
+    for (size_t i = 0; i < numItems; i++) {
+        auto item = items[i];
+
+        if (item.find_first_not_of('-') == std::string::npos) {
+            y += PopupItemHeight / 2;
+            continue;
+        }
+
+        Rect itemBounds{ bounds.x, y, bounds.width, PopupItemHeight };
+        auto wd = GetWidget(item + name, itemBounds, false);
+
+        if (wd.state == WidgetState::Clicked) {
+            m_state.openPopup = 0;
+            popup.lastSelected = i;
+            if (selected) *selected = i;
+            return true;
+        }
+
+        y += PopupItemHeight;
+    }
+
+    return false;
+}
+
+void TinyGUI::ShowPopup(const std::string& name, Vector2i position) {
+	auto id = std::hash<std::string>()(name);
+	auto&& pos = m_popups.find(id);
+	if (pos == m_popups.end()) {
+        return;
+	}
+
+	auto& popup = pos->second;
+	popup.position = position;
+
+    auto screenSize = m_renderer.GetScreenSize();
+    if (popup.position.x + popup.size.x > screenSize.x) {
+		popup.position.x = screenSize.x - popup.size.x;
+	}
+
+    if (popup.position.y + popup.size.y > screenSize.y) {
+		popup.position.y = screenSize.y - popup.size.y;
+	}
+
+    m_state.openPopup = id;
+}
+
+void TinyGUI::ShowPopup(const std::string& name) {
+    ShowPopup(name, m_state.lastClickedWidgetPosition);
+}
+
+void TinyGUI::OnCreate() {
+    auto screenSize = m_renderer.GetScreenSize();
+    m_rectStack.push_back(Rect{ 0, 0, int(screenSize.x), int(screenSize.y) });
+
+#ifdef OLC_PGE_APPLICATION
+    m_panelsLayer = pge->CreateLayer();
+    pge->EnableLayer(m_panelsLayer, true);
+
+    m_widgetsLayer = pge->CreateLayer();
+    pge->EnableLayer(m_widgetsLayer, true);
+#endif
+
+    SetTargetLayer(m_widgetsLayer);
+}
+
+bool TinyGUI::OnUpdate(float deltaTime) {
+ //   m_state.mouseDown = pge->GetMouse(0).bHeld;
+ //   m_state.mouseDelta = pge->GetMousePos() - m_state.mousePos;
+	//m_state.mousePos = pge->GetMousePos();
+
+    if (m_rectStack.empty()) {
+        auto screenSize = m_renderer.GetScreenSize();
+        m_rectStack.push_back(Rect{ 0, 0, int(screenSize.x), int(screenSize.y) });
+    }
+
+    if (!m_state.mouseDown) m_state.hoveredId = 0;
+
+    for (auto&& [wid, widget] : m_widgets) {
+        widget.pressed = false;
+        widget.released = false;
+	}
+
+#ifdef OLC_PGE_APPLICATION
+    pge->SetPixelMode(Color::ALPHA);
+
+    pge->SetDrawTarget(nullptr);
+    pge->Clear(olc::BLANK);
+
+    pge->SetDrawTarget(m_panelsLayer);
+    pge->Clear(olc::BLANK);
+
+    pge->SetDrawTarget(m_widgetsLayer);
+    pge->Clear(olc::BLANK);
+
+    SetTargetLayer(m_widgetsLayer);
+#endif
+
+    RenderDockingAreas();
+
+	return false;
+}
+
+void TinyGUI::OnFinalize(float deltaTime) {
+    // check frame clicks
+    std::vector<size_t> frames;
+    for (auto&& [id, frame] : m_frames) {
+		frames.push_back(id);
+	}
+
+    // sort by fid == frontMostPanelId, placing it at the top
+    std::sort(frames.begin(), frames.end(), [&](size_t a, size_t b) {
+		return a == m_state.frontMostPanelId;
+	});
+
+    if (!frames.empty()) {
+        for (auto fid : frames) {
+			auto& frame = m_frames[fid];
+            if (
+                m_state.mouseDown &&
+                frame.titleBounds.HasPoint(m_state.mousePos) &&
+                !frame.dragging &&
+                m_state.activeId == 0
+            ) {
+                m_state.activeId = fid;
+                m_state.frontMostPanelId = fid;
+                frame.dragging = true;
+                frame.dockId = 0;
+                m_state.clickedFrame = &frame;
+                break;
+            }
+		}
+
+        if (m_state.clickedFrame && !m_state.mouseDown) {
+            m_state.activeId = 0;
+
+            // docking logic
+            auto dockId = NearestDockingArea(m_state.clickedFrame->bounds);
+            if (dockId != size_t(-1) && IsDockingAreaFree(dockId)) {
+                Rect dockRect = m_dockingAreas[dockId];
+                m_state.clickedFrame->positionOffset.x = dockRect.x;
+                m_state.clickedFrame->positionOffset.y = dockRect.y;
+                m_state.clickedFrame->bounds.width = dockRect.width;
+                m_state.clickedFrame->bounds.height = dockRect.height;
+				m_state.clickedFrame->dockId = dockId;
+            }
+
+            m_state.clickedFrame->dragging = false;
+            m_state.clickedFrame = nullptr;
+		}
+    }
+
+    // docking highlight
+    if (m_state.clickedFrame) {
+        auto dockId = NearestDockingArea(m_state.clickedFrame->bounds);
+        if (dockId != size_t(-1) && IsDockingAreaFree(dockId)) {
+            m_renderer.DrawStyle9Patch(
+                GuiMapSprite::Selection,
+                Color(18, 101, 255, 160),
+                m_dockingAreas[dockId],
+                m_state.targetLayer
+            );
+        }
+    }
+
+    //////
+
+    DrawPopups();
+    m_renderer.RenderAll();
+
+    if (!m_state.mouseDown) {
+        m_state.activeId = 0;
+    }
+
+    m_rectStack.clear();
+
+    m_state.blinkTimer += deltaTime;
+    if (m_state.blinkTimer >= 0.4f) {
+        m_state.blink = !m_state.blink;
+        m_state.blinkTimer = 0.0f;
+	}
+}
+
+void TinyGUI::BeginFrame(
+    const std::string& name,
+    const std::string& title,
+    const Vector2i& position,
+    int width,
+    bool collapsible, bool fixed
+) {
+    if (!m_frameStack.empty()) return; // Not possible to create frames inside frames
+
+    const int padding = 5;
+
+    auto fid = std::hash<std::string>()(name);
+    auto pos = m_frames.find(fid);
+    if (pos == m_frames.end()) {
+		m_frames[fid] = Frame{};
+		pos = m_frames.find(fid);
+        pos->second.positionOffset = position;
+	}
+
+    Frame& fram = pos->second;
+    fram.name = name;
+    fram.title = title;
+    fram.insertId = m_renderer.GetDrawCommandCount();
+    fram.collapsible = collapsible;
+    fram.fixed = fixed;
+
+    auto [tw, th] = m_renderer.GetTextSize(title).AsPair();
+
+    fram.bounds = Rect{ fram.positionOffset.x, fram.positionOffset.y, width, padding + FrameTitleHeight };
+    if (fram.dockId != 0) {
+        Rect dockRect = m_dockingAreas[fram.dockId];
+        fram.bounds.width = dockRect.width;
+        fram.bounds.height = dockRect.height;
+    }
+
+    fram.titleBounds = Rect{ fram.bounds.x + 2, fram.bounds.y + 2, fram.bounds.width - 4, FrameTitleHeight };
+
+    // adjust title bounds to exclude the collapse button
+    if (fram.collapsible && fram.dockId == 0) {
+        fram.titleBounds.width -= FrameTitleHeight;
+    }
+
+    m_frameStack.push_back(fid);
+
+    Rect widgetsRect = fram.bounds.Expand(-padding);
+    widgetsRect.y += fram.titleBounds.height;
+    widgetsRect.height -= fram.titleBounds.height;
+    PushRect(widgetsRect);
+
+    if (m_state.frontMostPanelId == fid) SetTargetLayer(m_panelsLayer);
+    else SetTargetLayer(m_widgetsLayer);
+}
+
+Rect TinyGUI::EndFrame() {
+    const int padding = 5;
+
+    if (m_frameStack.empty()) return Rect{}; // Why are you calling this?
+
+    auto titleBgColor = PixelBrightness(baseColor, 0.3f);
+    auto light = GetBestForegroundColor(titleBgColor);
+    auto fid = m_frameStack.back();
+
+    Frame& frame = m_frames[fid];
+
+    Rect frameBounds = frame.bounds;
+    Rect titleBounds = frame.titleBounds;
+
+    bool docked = frame.dockId != 0;
+    if (!docked) {
+        frameBounds.height += PeekRect().y - frameBounds.y;
+        frameBounds.height -= FrameTitleHeight;
+    }
+
+    if (frame.collapsed && !docked) {
+        frameBounds.height = FrameTitleHeight + padding;
+    }
+
+    auto [tw, th] = m_renderer.GetTextSize(frame.title).AsPair();
+    m_renderer.DrawText(
+        frame.title, light,
+        Rect{ frameBounds.x + 6, frameBounds.y + 2 + (FrameTitleHeight / 2 - th / 2), frameBounds.width - 4, FrameTitleHeight },
+        m_state.targetLayer,
+        frame.insertId
+    );
+
+    m_renderer.DrawFillRect(
+        titleBgColor,
+        titleBounds,
+        m_state.targetLayer,
+        frame.insertId
+    );
+
+    m_renderer.DrawStyle9Patch(
+        GuiMapSprite::Frame,
+        baseColor,
+        frameBounds,
+        m_state.targetLayer,
+        0xFF,
+        frame.insertId
+    );
+
+    m_renderer.DrawStyle9Patch(
+        GuiMapSprite::Shadow,
+        baseColor,
+        Rect{ frameBounds.x + 3, frameBounds.y + 3, frameBounds.width, frameBounds.height },
+        m_state.targetLayer,
+        0xFF,
+        frame.insertId
+    );
+
+    if (frame.collapsible && !docked) {
+        m_state.ignoreCollapsed = true;
+        Rect collapseButtonBounds = Rect{
+            frameBounds.x + frameBounds.width - FrameTitleHeight - 1,
+            frameBounds.y + 2,
+            FrameTitleHeight, FrameTitleHeight
+        };
+        int centerOff = FrameTitleHeight / 2 - 4;
+
+        if (Button(frame.name + "_collapse", collapseButtonBounds, "")) {
+            frame.collapsed = !frame.collapsed;
+        }
+        m_renderer.DrawStyleSprite(
+            frame.collapsed ? GuiMapSprite::ArrowDown : GuiMapSprite::ArrowUp,
+            GetBestForegroundColor(),
+            Rect{ collapseButtonBounds.x + centerOff - 1, collapseButtonBounds.y + centerOff + 1, 8, 8 },
+            m_state.targetLayer
+        );
+        m_state.ignoreCollapsed = false;
+    }
+
+    PopRect();
+    m_frameStack.pop_back();
+
+    frame.bounds = frameBounds;
+    
+    // moving logic
+    if (frame.dragging && !frame.fixed) {
+        frame.positionOffset.x += m_state.mouseDelta.x;
+        frame.positionOffset.y += m_state.mouseDelta.y;
+    }
+
+    SetTargetLayer(m_widgetsLayer);
+
+    return frameBounds;
+}
+
+void TinyGUI::PushRect(Rect rect) {
+    if (CurrentFrameIsCollapsed()) return;
+	m_rectStack.push_back(rect);
+}
+
+Rect& TinyGUI::PeekRect() {
+	return m_rectStack.back();
+}
+
+void TinyGUI::PopRect() {
+    if (CurrentFrameIsCollapsed()) return;
+	m_rectStack.pop_back();
+}
+
+Rect TinyGUI::RectCutLeft(int amount) {
+    if (CurrentFrameIsCollapsed()) return Rect{};
+    Rect& orig = PeekRect();
+    Rect rec{ orig.x, orig.y, amount, orig.height };
+    orig.x += amount;
+    orig.width -= amount;
+    return rec;
+}
+
+Rect TinyGUI::RectCutRight(int amount) {
+    if (CurrentFrameIsCollapsed()) return Rect{};
+	Rect& orig = PeekRect();
+	Rect rec{ orig.x + orig.width - amount, orig.y, amount, orig.height };
+	orig.width -= amount;
+	return rec;
+}
+
+Rect TinyGUI::RectCutTop(int amount) {
+    if (CurrentFrameIsCollapsed()) return Rect{};
+	Rect& orig = PeekRect();
+	Rect rec{ orig.x, orig.y, orig.width, amount };
+	orig.y += amount;
+	orig.height -= amount;
+	return rec;
+}
+
+Rect TinyGUI::RectCutBottom(int amount) {
+    if (CurrentFrameIsCollapsed()) return Rect{};
+	Rect& orig = PeekRect();
+	Rect rec{ orig.x, orig.y + orig.height - amount, orig.width, amount };
+	orig.height -= amount;
+	return rec;
+}
+
+void TinyGUI::AddDockingArea(const std::string& name, const Rect& rect) {
+    m_dockingAreas[utils::GetIDFromName(name)] = rect;
+}
+
+void TinyGUI::AddDockingAreaLeft(const std::string& name, int size) {
+    PushRect(RectCutLeft(size));
+    AddDockingArea(name, PeekRect());
+    PopRect();
+}
+
+void TinyGUI::AddDockingAreaRight(const std::string& name, int size) {
+    PushRect(RectCutRight(size));
+	AddDockingArea(name, PeekRect());
+	PopRect();
+}
+
+void TinyGUI::AddDockingAreaTop(const std::string& name, int size) {
+    PushRect(RectCutTop(size));
+	AddDockingArea(name, PeekRect());
+	PopRect();
+}
+
+void TinyGUI::AddDockingAreaBottom(const std::string& name, int size) {
+    PushRect(RectCutBottom(size));
+	AddDockingArea(name, PeekRect());
+	PopRect();
+}
+
+void TinyGUI::AddDockingAreaRemainingSpace(const std::string& name) {
+    AddDockingArea(name, PeekRect());
+}
+
+TinyGUI::Widget& TinyGUI::GetWidget(const std::string& name, Rect bounds, bool blockInputByPopup) {
+    auto id = std::hash<std::string>()(name);
+
+    auto pos = m_widgets.find(id);
+    if (pos == m_widgets.end()) {
+        m_widgets[id] = Widget{};
+        pos = m_widgets.find(id);
+    }
+    auto& widget = pos->second;
+    widget.id = id;
+    widget.state = WidgetState::Idle;
+    widget.visible = true;
+    size_t parentFrameId = 0;
+
+    // is this widget inside of a collapsed frame?
+    if (!m_frameStack.empty()) {
+        auto& frame = m_frames[m_frameStack.back()];
+        parentFrameId = m_frameStack.back();
+        widget.visible = !frame.collapsed;
+    }
+    //
+
+    // we should receive no input if there's a frame on top of the area where we're trying to click
+    // so if there's a frame intersecting the widget bounds, and we try to click in both bounds, we should block the input
+
+    Frame* blockingFrame = nullptr;
+    for (auto&& [fid, frame] : m_frames) {
+        Rect totalBounds = frame.titleBounds.Union(frame.bounds);
+		if (totalBounds.Intersects(bounds) && m_state.frontMostPanelId == fid && m_state.frontMostPanelId != parentFrameId) {
+            //DrawStyle9Patch(GuiMapSprite::Selection, olc::RED, bounds.Expand(2));
+            //DrawStyle9Patch(GuiMapSprite::Selection, olc::GREEN, totalBounds.Expand(2));
+			blockingFrame = &frame;
+			break;
+		}
+	}
+
+    bool blockingFrameHasPoint =
+        blockingFrame &&
+        (blockingFrame->bounds.HasPoint(m_state.mousePos) || blockingFrame->titleBounds.HasPoint(m_state.mousePos));
+
+    bool blocked = blockInputByPopup && m_state.openPopup != 0;
+    if (bounds.HasPoint(m_state.mousePos) && !blockingFrameHasPoint && !blocked) {
+        m_state.hoveredId = id;
+        widget.state = WidgetState::Hovered;
+        if (m_state.activeId == 0 && m_state.mouseDown) {
+            m_state.activeId = id;
+            m_state.focusedId = id;
+            m_state.lastClickedWidgetPosition.x = bounds.x;
+            m_state.lastClickedWidgetPosition.y = bounds.y + bounds.height;
+            widget.state = WidgetState::Active;
+            widget.pressed = true;
+        }
+    }
+    else {
+        if (m_state.focusedId == id && m_state.mouseDown) {
+            m_state.focusedId = 0;
+        }
+    }
+
+    if (m_state.activeId == id && m_state.hoveredId == id && !blocked) {
+        widget.state = WidgetState::Active;
+        if (!m_state.mouseDown) {
+            widget.released = true;
+            widget.state = WidgetState::Clicked;
+        }
+    }
+
+    return widget;
+}
+
+TinyGUI::Widget& TinyGUI::GetWidgetByName(const std::string& name) {
+    auto id = std::hash<std::string>()(name);
+    auto pos = m_widgets.find(id);
+    if (pos == m_widgets.end()) {
+        m_widgets[id] = Widget{};
+        pos = m_widgets.find(id);
+    }
+    return pos->second;
+}
+
+Color TinyGUI::PixelBrightness(Color color, float amount) {
+    auto fnPerc = [amount](float value) {
+        return std::clamp(value * amount, 0.0f, 1.0f);
+    };
+
+    const float r = float(color.r) / 255.0f;
+    const float g = float(color.g) / 255.0f;
+    const float b = float(color.b) / 255.0f;
+    const float a = float(color.a) / 255.0f;
+    return Color::FromFloat(fnPerc(r), fnPerc(g), fnPerc(b), a);
+}
+
+GuiMapSprite TinyGUI::WidgetStateToSprite(WidgetState state) {
     switch (state) {
 		case WidgetState::Hovered: return GuiMapSprite::ButtonHovered;
 		case WidgetState::Active:
@@ -1849,12 +2672,12 @@ GuiMapSprite olcPGEX_TinyGUI::WidgetStateToSprite(WidgetState state) {
 	}
 }
 
-olc::Pixel olcPGEX_TinyGUI::GetBestForegroundColor(const std::optional<olc::Pixel>& bgColor) {
-    olc::Pixel bg = bgColor.value_or(baseColor);
-    return utils::Luma(bg) > 0.5f ? olc::BLACK : olc::WHITE;
+Color TinyGUI::GetBestForegroundColor(const std::optional<Color>& bgColor) {
+    Color bg = bgColor.value_or(baseColor);
+    return utils::Luma(bg) > 0.5f ? Color{ 0, 0, 0, 255 } : Color{ 255, 255, 255, 255 };
 }
 
-size_t olcPGEX_TinyGUI::NearestDockingArea(const Rect& bounds) {
+size_t TinyGUI::NearestDockingArea(const Rect& bounds) {
     const int distanceTolerancePx = 1;
 
     int distance = INT_MAX;
@@ -1870,32 +2693,20 @@ size_t olcPGEX_TinyGUI::NearestDockingArea(const Rect& bounds) {
     return dockId;
 }
 
-bool olcPGEX_TinyGUI::IsDockingAreaFree(size_t id) {
+bool TinyGUI::IsDockingAreaFree(size_t id) {
     for (auto&& [fid, frame] : m_frames) {
         if (frame.dockId == id) return false;
     }
     return true;
 }
 
-void olcPGEX_TinyGUI::AddDrawCommand(DrawCommand cmd, size_t position) {
-    cmd.targetLayer = m_state.targetLayer;
-    if (position < size_t(-1)) {
-		m_drawCommands.insert(m_drawCommands.begin() + position, cmd);
-	}
-    else {
-		m_drawCommands.push_back(cmd);
-	}
-}
-
-void olcPGEX_TinyGUI::SetTargetLayer(uint32_t layer) {
+void TinyGUI::SetTargetLayer(uint32_t layer) {
     m_state.targetLayer = layer;
 }
 
-void olcPGEX_TinyGUI::DrawPopups() {
+void TinyGUI::DrawPopups() {
     const int paddingX = 8;
     const int paddingY = 5;
-
-    pge->SetDrawTarget(nullptr);
 
     for (auto&& [wid, popup] : m_popups) {
         if (m_state.openPopup != wid) continue;
@@ -1903,7 +2714,7 @@ void olcPGEX_TinyGUI::DrawPopups() {
         int width = 0, height = 0;
         for (size_t i = 0; i < popup.items.size(); i++) {
             auto item = popup.items[i];
-            auto [tw, th] = TextSize(item);
+            auto [tw, th] = m_renderer.GetTextSize(item).AsPair();
 
             width = std::max(width, tw);
 
@@ -1917,15 +2728,15 @@ void olcPGEX_TinyGUI::DrawPopups() {
 
         Rect bounds{ popup.position.x, popup.position.y, width + paddingX * 2, height + paddingY * 2 };
 
-        DrawStyle9Patch(
+        m_renderer.DrawStyle9Patch(
             Rect{ bounds.x + 3, bounds.y + 3, bounds.width, bounds.height },
-            olc::WHITE,
+            Color{ 255, 255, 255, 255 },
             GuiMapSprite::Shadow,
             0xFF
         );
-        DrawStyle9Patch(
+        m_renderer.DrawStyle9Patch(
             bounds,
-            olc::WHITE,
+            Color{ 255, 255, 255, 255 },
             GuiMapSprite::Panel,
             0xFF
         );
@@ -1938,10 +2749,11 @@ void olcPGEX_TinyGUI::DrawPopups() {
             auto item = popup.items[i];
 
             if (item.find_first_not_of('-') == std::string::npos) {
-                pge->DrawLineDecal(
-                    olc::vf2d{ float(bounds.x + 3), float(y + PopupItemHeight / 4) },
-                    olc::vf2d{ float(bounds.x + bounds.width - 3), float(y + PopupItemHeight / 4) },
-                    PixelBrightness(baseColor, 0.5f)
+                m_renderer.DrawLine(
+                    PixelBrightness(baseColor, 0.5f),
+                    Vector2i{ (bounds.x + 3), (y + PopupItemHeight / 4) },
+                    Vector2i{ (bounds.x + bounds.width - 3), (y + PopupItemHeight / 4) },
+                    0
                 );
                 y += PopupItemHeight / 2;
                 continue;
@@ -1950,34 +2762,31 @@ void olcPGEX_TinyGUI::DrawPopups() {
             Rect wdBounds{ bounds.x, y, bounds.width, PopupItemHeight };
             auto wd = GetWidgetByName(item + popup.name);
             
-            olc::Pixel fgColor = dark;
+            Color fgColor = dark;
             switch (wd.state) {
                 case WidgetState::Hovered:
                 case WidgetState::Active:
                 case WidgetState::Clicked:
                     fgColor = light;
-                    pge->FillRectDecal(
-                        olc::vi2d{ wdBounds.x, wdBounds.y },
-                        olc::vi2d{ wdBounds.width, wdBounds.height },
-                        dark
-                    );
+                    m_renderer.DrawFillRect(dark, wdBounds, 0);
                     break;
                 default: break;
             }
 
-            auto [tw, th] = TextSize(item);
-            pge->DrawStringPropDecal(
-				{ float(bounds.x + paddingX), float(y + PopupItemHeight / 2 - th / 2) },
-				item,
-				fgColor
-			);
+            auto [tw, th] = m_renderer.GetTextSize(item).AsPair();
+            m_renderer.DrawText(
+                item,
+                fgColor,
+				{ bounds.x + paddingX, y + PopupItemHeight / 2 - th / 2, bounds.width, bounds.height },
+                0
+            );
 
             y += PopupItemHeight;
         }
     }
 }
 
-float utils::Luma(const olc::Pixel& color) {
+float utils::Luma(const Color& color) {
     float r = float(color.r) / 255.0f;
     float g = float(color.g) / 255.0f;
     float b = float(color.b) / 255.0f;
