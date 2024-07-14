@@ -83,8 +83,8 @@ public:
 
 		gui.EndFrame();
 
-		gui.BeginFrame("frame2", "Label Test", { 250, 120 }, 220);
-		gui.Label(gui.RectCutTop(100), loremIpsum, AlignCenter | AlignMiddle, std::nullopt, true);
+		gui.BeginFrame("frame2", "Label Test", { 250, 120 }, 250);
+		gui.Label(gui.RectCutTop(150), loremIpsum, AlignCenter, std::nullopt, true);
 		gui.EndFrame();
 
 		gui.BeginFrame("guicolor", "GUI Base Color", { 12, int(gui.GetRenderer().GetScreenSize().y) - 150}, 240, true);
@@ -203,31 +203,86 @@ int main(int argc, char** argv) {
 	double lastTime = smol_timer();
 	double accumulator = 0.0;
 
+	// key state
+	std::map<int, bool> keysPressed;
+
 	while (!smol_frame_is_closed(frame)) {
+		smol_frame_update(frame);
+
+		bool canRender = false;
 		double currentTime = smol_timer();
 		double deltaTime = currentTime - lastTime;
 		lastTime = currentTime;
 
 		accumulator += deltaTime;
 
-		smol_frame_update(frame);
+		// reset key states
+		for (auto& [key, value] : keysPressed) {
+			value = false;
+		}
 
 		SMOL_FRAME_EVENT_LOOP(frame, ev) {
-			
+			switch (ev.type) {
+				case SMOL_FRAME_EVENT_MOUSE_MOVE: {
+					InputEvent ie{};
+					ie.type = InputEvent::Type::MouseMove;
+					ie.mousePos.x = ev.mouse.x;
+					ie.mousePos.y = ev.mouse.y;
+					app.gui.OnEvent(ie);
+				} break;
+				case SMOL_FRAME_EVENT_MOUSE_BUTTON_DOWN: {
+					if (ev.mouse.button == 1) {
+						InputEvent ie{};
+						ie.type = InputEvent::Type::MouseDown;
+						ie.mouseState = true;
+						ie.mousePos.x = ev.mouse.x;
+						ie.mousePos.y = ev.mouse.y;
+						app.gui.OnEvent(ie);
+					}
+				} break;
+				case SMOL_FRAME_EVENT_MOUSE_BUTTON_UP: {
+					if (ev.mouse.button == 1) {
+						InputEvent ie{};
+						ie.type = InputEvent::Type::MouseUp;
+						ie.mouseState = false;
+						app.gui.OnEvent(ie);
+					}
+				} break;
+				case SMOL_FRAME_EVENT_TEXT_INPUT: {
+					InputEvent ie{};
+					ie.type = InputEvent::Type::TextInput;
+					ie.keyChar = ev.input.codepoint;
+					app.gui.OnEvent(ie);
+				} break;
+				case SMOL_FRAME_EVENT_KEY_DOWN: {
+					keysPressed[ev.key.code] = true;
+				} break;
+			}
+
+			if (keysPressed[SMOLK_LEFT]) app.gui.OnEvent({ InputEvent::Type::Left });
+			if (keysPressed[SMOLK_RIGHT]) app.gui.OnEvent({ InputEvent::Type::Right });
+			if (keysPressed[SMOLK_HOME]) app.gui.OnEvent({ InputEvent::Type::Home });
+			if (keysPressed[SMOLK_END]) app.gui.OnEvent({ InputEvent::Type::End });
+			if (keysPressed[SMOLK_BACKSPACE]) app.gui.OnEvent({ InputEvent::Type::Backspace });
+			if (keysPressed[SMOLK_DELETE]) app.gui.OnEvent({ InputEvent::Type::Delete });
+			if (keysPressed[SMOLK_RETURN]) app.gui.OnEvent({ InputEvent::Type::Return });
 		}
 
 		while (accumulator >= timeStep) {
 			accumulator -= timeStep;
+			canRender = true;
 		}
 
-		glClearColor(0.0f, 0.1f, 0.3f, 1.0f);
-		glClear(GL_COLOR_BUFFER_BIT);
+		if (canRender) {
+			glClearColor(0.0f, 0.1f, 0.3f, 1.0f);
+			glClear(GL_COLOR_BUFFER_BIT);
 
-		app.gui.OnUpdate(timeStep);
-		app.OnUserUpdate(timeStep);
-		app.gui.OnFinalize(timeStep);
+			app.gui.OnUpdate(timeStep);
+			app.OnUserUpdate(timeStep);
+			app.gui.OnFinalize(timeStep);
 
-		smol_frame_gl_swap_buffers(frame);
+			smol_frame_gl_swap_buffers(frame);
+		}
 	}
 
 	glbUninit();

@@ -8,6 +8,7 @@
 #include "stb_truetype.h"
 #include <iostream>
 #include <fstream>
+#include <array>
 #else // Use PixelGameEngine backend
 #include "olcPixelGameEngine.h"
 #endif
@@ -99,6 +100,9 @@ struct Vector2 {
     T x, y;
 
     std::pair<T, T> AsPair() const { return { x, y }; }
+
+    Vector2 operator+(const Vector2& other) const { return { x + other.x, y + other.y }; }
+    Vector2 operator-(const Vector2& other) const { return { x - other.x, y - other.y }; }
 };
 
 using Vector2i = Vector2<int32_t>;
@@ -238,25 +242,42 @@ private:
     Batch* GetNewBatch(Batch::Type type, uint32_t count, Texture* texture);
 };
 
+constexpr uint32_t StartCharacter = 32;
+constexpr uint32_t CharacterCount = 655;
+
 class Font {
 public:
+    struct CharInfo {
+        int advanceX, leftSideBearing, kerningAdvance;
+    };
+
     void Load(const std::string& filename, float size);
 
     Texture& GetTexture() { return m_texture; }
-    stbtt_packedchar GetPackedChar(char c) { return m_chars[c - 32]; }
 
     int GetLineHeight() const { return m_lineHeight; }
     int GetAscent() const { return m_ascent; }
     int GetBaseline() const { return m_baseline; }
 
+    const CharInfo& GetCharInfo(uint32_t prevCp, uint32_t nextCp);
+    stbtt_packedchar GetPackedChar(char c) { return m_chars[c - StartCharacter]; }
+
+    float GetScale() const { return m_scale; }
 private:
-    stbtt_packedchar m_chars[96];
+    std::array<stbtt_packedchar, CharacterCount> m_chars;
+    std::vector<uint8_t> m_ttfData;
+    std::map<uint32_t, CharInfo> m_charInfo;
+
     stbtt_fontinfo m_fontInfo;
 
     int m_ascent, m_baseline, m_lineHeight;
     float m_scale;
 
     Texture m_texture;
+
+    int GetKerningAdvance(uint32_t a, uint32_t b);
+    void GetCodepointMetrics(uint32_t cp, int& advance, int& lsb);
+    void GetCodepointBox(uint32_t cp, int& x0, int& y0, int& x1, int& y1) const;
 };
 #endif
 
@@ -335,6 +356,33 @@ enum Alignment {
     AlignBottom = 32
 };
 
+struct InputState {
+	Vector2i mousePos;
+	bool mouseDown;
+};
+
+struct InputEvent {
+    enum class Type {
+        MouseDown,
+        MouseUp,
+        MouseMove,
+        TextInput,
+
+        Backspace,
+        Delete,
+        Home,
+		End,
+        Left,
+        Right,
+        Return
+    } type;
+
+    Vector2i mousePos, mouseDelta;
+    int key;
+    bool mouseState;
+    char keyChar;
+};
+
 namespace utils {
     template <typename... Args>
     std::string StringFormat(const std::string& format, Args... args) {
@@ -350,6 +398,8 @@ namespace utils {
     std::vector<std::string> Split(const std::string& str, const std::initializer_list<std::string>& delimiters);
 
     size_t GetIDFromName(const std::string& name);
+
+    uint32_t GetCodepoint(const std::string& text, uint32_t pos, uint32_t& out);
 }
 
 class TinyGUI {
@@ -469,12 +519,18 @@ public:
     void OnCreate();
     bool OnUpdate(float deltaTime);
     void OnFinalize(float deltaTime);
+    void OnEvent(InputEvent ev);
 
     bool GetMouseState() const { return m_state.mouseDown; }
 
     Vector2i GetLastClickedWidgetPosition() const { return m_state.lastClickedWidgetPosition; }
     Vector2i GetMousePos() const { return m_state.mousePos; }
     bool IsMouseDown() const { return m_state.mouseDown; }
+
+    bool IsDragging() const { return m_state.dragging; }
+    Vector2i GetDragPosition() const { return m_state.dragStart + m_state.dragOffset - m_state.dragCorrection; }
+
+    void PrepareDrag(Vector2i elementPosition);
 
     Renderer& GetRenderer() { return m_renderer; }
 
@@ -573,17 +629,16 @@ private:
         const std::string& fmt,
         const std::optional<Color>& bg
     ) requires std::is_integral_v<T> || std::is_floating_point_v<T> {
-        const auto dark = PixelBrightness(baseColor, 0.5f);
         const int thumbWidth = 18;
 
         m_renderer.DrawStyle9Patch(
             bg.has_value() ? GuiMapSprite::ButtonIdle : GuiMapSprite::ButtonActive,
-            bg.has_value() ? *bg : dark,
+            bg.has_value() ? *bg : Color{ 255, 255, 255, 255 },
             bounds,
             m_state.targetLayer
         );
 
-        auto wid = GetWidget(name, Rect{ bounds.x + thumbWidth, bounds.y, bounds.width - thumbWidth * 2, bounds.height });
+        auto wid = GetWidget(name, Rect{ bounds.x, bounds.y, bounds.width - thumbWidth, bounds.height });
 
         const int buttonX = bounds.x + bounds.width - thumbWidth;
         const int buttonHeight = bounds.height / 2;
@@ -669,11 +724,23 @@ private:
         size_t hoveredId, activeId, focusedId, frontMostPanelId{ 0 };
         bool mouseDown, ignoreCollapsed{ false };
         Vector2i mousePos, lastClickedWidgetPosition, mouseDelta;
+
+        Vector2i dragStart, dragOffset, dragCorrection;
+        bool dragging{ false };
+
         size_t openPopup;
+
         float blinkTimer{ 0.0f };
         bool blink{ false };
+
         uint32_t targetLayer{ 0 };
+
         Frame* clickedFrame{ nullptr };
+
+        // text input state
+        std::string textInput;
+        bool textInputActive{ false };
+        int textInputCursor{ 0 };
     } m_state{};
 
     // widgets state
@@ -1006,24 +1073,29 @@ void BatchedRenderer::DrawChar(Font* font, const Vector2f& pos, char c, Color co
 
 void BatchedRenderer::DrawText(Font* font, const Vector2f& pos, const std::string& text, Color color) {
     Vector2f cursor = pos;
+    uint32_t prevCp = 0;
 	for (size_t i = 0; i < text.size(); i++) {
 		char c = text[i];
-		if (c < 32 || c >= 128) continue;
+		if (c < StartCharacter || c >= StartCharacter + CharacterCount) continue;
 
 		DrawChar(font, cursor, c, color);
 
-        auto chr = font->GetPackedChar(c);
-		cursor.x += chr.xadvance;
+        auto info = font->GetCharInfo(prevCp, uint32_t(c));
+        cursor.x += info.advanceX + info.leftSideBearing + info.kerningAdvance;
+
+        prevCp = uint32_t(c);
 	}
 }
 
 Vector2i BatchedRenderer::GetTextSize(Font* font, const std::string& text) {
     int w = 0, h = 0;
-
     int accumWidth = 0;
-    for (size_t i = 0; i < text.size(); i++) {
-        char c = text[i];
-        if (c < 32 || c >= 128) continue;;
+
+    int i = 0;
+
+    uint32_t prevCp = 0;
+    for (char c : text) {
+        if (c < StartCharacter || c >= StartCharacter + CharacterCount) continue;
 
         if (c == '\n') {
             h += font->GetLineHeight();
@@ -1031,8 +1103,11 @@ Vector2i BatchedRenderer::GetTextSize(Font* font, const std::string& text) {
             accumWidth = 0;
         }
         else {
-            accumWidth += font->GetPackedChar(c).xadvance;
+            auto info = font->GetCharInfo(prevCp, uint32_t(c));
+            accumWidth += info.advanceX + info.leftSideBearing + info.kerningAdvance;
         }
+
+        prevCp = uint32_t(c);
     }
 
     w = std::max(w, accumWidth);
@@ -1093,14 +1168,14 @@ void BatchedRenderer::Render(Shader* shader, Vector2ui screenSize) {
 
         switch (batch.type) {
             case Batch::TypeScissor: {
-                /*if (batch.scissor.width == 0 || batch.scissor.height == 0) {
+                if (batch.scissor.width == 0 || batch.scissor.height == 0) {
 					glDisable(GL_SCISSOR_TEST);
                 }
                 else {
 					glEnable(GL_SCISSOR_TEST);
                     int y = screenSize.y - batch.scissor.y - batch.scissor.height;
                     glScissor(batch.scissor.x, y, batch.scissor.width, batch.scissor.height);
-                }*/
+                }
             } break;
             case Batch::TypeLine: {
 				glDrawArrays(GL_LINES, batch.offset, batch.count);
@@ -1174,11 +1249,11 @@ void Font::Load(const std::string& filename, float size) {
     size_t length = file.tellg();
     file.seekg(0, std::ios::beg);
 
-    std::vector<uint8_t> buffer(length);
-    file.read(reinterpret_cast<char*>(buffer.data()), length);
+    m_ttfData.resize(length);
+    file.read(reinterpret_cast<char*>(m_ttfData.data()), length);
     file.close();
 
-    if (!stbtt_InitFont(&m_fontInfo, buffer.data(), 0)) {
+    if (!stbtt_InitFont(&m_fontInfo, m_ttfData.data(), stbtt_GetFontOffsetForIndex(m_ttfData.data(), 0))) {
 		std::cerr << "Failed to initialize font: " << filename << std::endl;
 		return;
 	}
@@ -1192,7 +1267,7 @@ void Font::Load(const std::string& filename, float size) {
         stbtt_PackBegin(&ctx, bitmap.data(), textureSize, textureSize, 0, 1, nullptr);
         stbtt_PackSetOversampling(&ctx, 1, 1);
 
-        if (!stbtt_PackFontRange(&ctx, buffer.data(), 0, size, 32, 96, m_chars)) {
+        if (!stbtt_PackFontRange(&ctx, m_ttfData.data(), 0, size, StartCharacter, CharacterCount, m_chars.data())) {
             stbtt_PackEnd(&ctx);
             textureSize *= 2;
         }
@@ -1221,6 +1296,40 @@ void Font::Load(const std::string& filename, float size) {
     m_lineHeight = int((m_ascent - descent + lineGap) * m_scale);
 }
 
+const Font::CharInfo& Font::GetCharInfo(uint32_t prevCp, uint32_t nextCp) {
+    auto pos = m_charInfo.find(nextCp);
+    if (pos != m_charInfo.end()) {
+        return pos->second;
+    }
+
+    CharInfo info{};
+    GetCodepointMetrics(nextCp, info.advanceX, info.leftSideBearing);
+    info.kerningAdvance = GetKerningAdvance(prevCp, nextCp);
+
+    m_charInfo[nextCp] = info;
+
+    return m_charInfo[nextCp];
+}
+
+int Font::GetKerningAdvance(uint32_t a, uint32_t b) {
+    int adv = stbtt_GetCodepointKernAdvance(&m_fontInfo, a, b);
+    return int(adv * m_scale);
+}
+
+void Font::GetCodepointMetrics(uint32_t cp, int& advance, int& lsb) {
+    int advValue = 0, lsbValue = 0;
+    stbtt_GetCodepointHMetrics(&m_fontInfo, cp, &advValue, &lsbValue);
+    advance = int(advValue * m_scale);
+    lsb = int(lsbValue * m_scale);
+}
+
+void Font::GetCodepointBox(uint32_t cp, int& x0, int& y0, int& x1, int& y1) const {
+    stbtt_GetCodepointBox(&m_fontInfo, cp, &x0, &y0, &x1, &y1);
+    x0 *= m_scale;
+    y0 *= m_scale;
+    x1 *= m_scale;
+    y1 *= m_scale;
+}
 #endif
 
 void Renderer::AddDrawCommand(DrawCommand cmd, uint32_t layer, size_t position) {
@@ -1237,7 +1346,7 @@ Renderer::Renderer() {
     LoadGuiTexture();
 #ifndef OLC_PGE_APPLICATION
     m_backend = std::make_unique<BatchedRenderer>();
-    m_font.Load("opensans.ttf", 16.0f);
+    m_font.Load("opensans.ttf", 18.0f);
 
     std::string vert = R"(
         #version 460 core
@@ -1291,6 +1400,14 @@ void Renderer::DrawText(const std::string& text, Color color, Rect bounds, uint3
     cmd.color = color;
     cmd.bounds = bounds;
     AddDrawCommand(cmd, layer, position);
+
+  //  auto [tw, th] = GetTextSize(text).AsPair();
+  //  DrawStyle9Patch(
+  //      GuiMapSprite::Selection,
+  //      Color{ 0, 255, 0, 128 },
+  //      Rect{ bounds.x, bounds.y, tw, th },
+		//0
+  //  );
 }
 
 void Renderer::DrawFillRect(Color color, Rect bounds, uint32_t layer, size_t position) {
@@ -1755,6 +1872,8 @@ void TinyGUI::Label(
         default: break;
     }
 
+    m_renderer.EnableClip(bounds.Expand(-1), m_state.targetLayer);
+
     int currentX = 0, currentY = 0;
     int lineIndex = 0;
     while (!words.empty()) {
@@ -1807,6 +1926,8 @@ void TinyGUI::Label(
 			} break;
         }
     }
+
+    m_renderer.DisableClip();
 }
 
 bool TinyGUI::Button(const std::string& name, Rect bounds, const std::string& text, const std::optional<Color>& color) {
@@ -1924,39 +2045,52 @@ bool TinyGUI::EditBox(const std::string& name, Rect bounds, std::string& text) {
 
     m_renderer.DrawStyle9Patch(GuiMapSprite::ButtonActive, baseColor, bounds, m_state.targetLayer);
 
-    if (focused /*&& !pge->IsTextEntryEnabled()*/) {
-        /*pge->TextEntryEnable(true, text);*/
+    if (focused && !m_state.textInputActive) {
+        m_state.textInput = text;
+        m_state.textInputCursor = text.size();
+        m_state.textInputActive = true;
     }
 
     // text entry
     if (focused) {
-        /*textChanged = pge->TextEntryGetString() != text;
-        text = pge->TextEntryGetString();*/
+        textChanged = m_state.textInput != text;
+        text = m_state.textInput;
     }
 
-    /*auto sz = pge->GetTextSizeProp(text.substr(0, pge->TextEntryGetCursor()));*/
-    int cursorX = bounds.x + 4/* + sz.x*/;
+    auto sz = m_renderer.GetTextSize(text.substr(0, m_state.textInputCursor));
+    int cursorX = bounds.x + 1 + sz.x;
     int textViewOffsetX = 0;
 
     // cursor is out of bounds?
-    if (cursorX - textViewOffsetX > (bounds.x + bounds.width - 4) - 8 && focused) {
-		textViewOffsetX = cursorX - (bounds.x + bounds.width - 4) + 8;
+    if (cursorX - textViewOffsetX > (bounds.x + bounds.width - 4) - 4 && focused) {
+		textViewOffsetX = cursorX - (bounds.x + bounds.width - 4) + 4;
 	}
 
     auto [tw, th] = m_renderer.GetTextSize(text).AsPair();
 
     int textX = bounds.x + 4 - textViewOffsetX;
-    m_renderer.EnableClip(bounds.Expand(-1), m_state.targetLayer);
-    m_renderer.DrawText(text, light, Rect{ textX, bounds.y + bounds.height / 2 - th / 2, bounds.width, bounds.height }, m_state.targetLayer);
+    m_renderer.EnableClip(bounds.Expand(-3), m_state.targetLayer);
+    m_renderer.DrawText(
+        text,
+        light,
+        Rect{ textX, bounds.y + bounds.height / 2 - th / 2, bounds.width, bounds.height },
+        m_state.targetLayer
+    );
     m_renderer.DisableClip();
 
     // draw cursor
     if (focused && m_state.blink) {
-        m_renderer.DrawText("_", light, { cursorX - textViewOffsetX, bounds.y + bounds.height / 2/* - sz.y / 2*/, 1, 1 }, m_state.targetLayer);
+        auto [curW, curH] = m_renderer.GetTextSize("|").AsPair();
+        m_renderer.DrawText(
+            "|",
+            light,
+            { cursorX - textViewOffsetX, bounds.y + bounds.height / 2 - curH / 2 - 1, 1, 1 },
+            m_state.targetLayer
+        );
     }
 
-    if (!focused/* && pge->IsTextEntryEnabled()*/) {
-        /*pge->TextEntryEnable(false);*/
+    if (!focused && m_state.textInputActive) {
+        m_state.textInputActive = false;
 	}
 
     return textChanged;
@@ -2228,10 +2362,6 @@ void TinyGUI::OnCreate() {
 }
 
 bool TinyGUI::OnUpdate(float deltaTime) {
- //   m_state.mouseDown = pge->GetMouse(0).bHeld;
- //   m_state.mouseDelta = pge->GetMousePos() - m_state.mousePos;
-	//m_state.mousePos = pge->GetMousePos();
-
     if (m_rectStack.empty()) {
         auto screenSize = m_renderer.GetScreenSize();
         m_rectStack.push_back(Rect{ 0, 0, int(screenSize.x), int(screenSize.y) });
@@ -2289,6 +2419,7 @@ void TinyGUI::OnFinalize(float deltaTime) {
                 m_state.frontMostPanelId = fid;
                 frame.dragging = true;
                 frame.dockId = 0;
+                PrepareDrag(frame.positionOffset);
                 m_state.clickedFrame = &frame;
                 break;
             }
@@ -2342,6 +2473,69 @@ void TinyGUI::OnFinalize(float deltaTime) {
         m_state.blink = !m_state.blink;
         m_state.blinkTimer = 0.0f;
 	}
+
+    m_state.mouseDelta = { 0, 0 };
+}
+
+void TinyGUI::OnEvent(InputEvent ev) {
+    switch (ev.type) {
+        case InputEvent::Type::MouseDown: {
+            m_state.mouseDown = true;
+            m_state.dragging = true;
+            m_state.dragStart = ev.mousePos;
+        } break;
+        case InputEvent::Type::MouseUp: {
+			m_state.mouseDown = false;
+            m_state.dragging = false;
+		} break;
+        case InputEvent::Type::MouseMove: {
+            m_state.mouseDelta = ev.mousePos - m_state.mousePos;
+			m_state.mousePos = ev.mousePos;
+
+            if (m_state.dragging) {
+                m_state.dragOffset = m_state.mousePos - m_state.dragStart;
+            }
+		} break;
+        case InputEvent::Type::TextInput: {
+            if (m_state.textInputActive) {
+                m_state.textInput.insert(m_state.textInput.begin() + m_state.textInputCursor, ev.keyChar);
+                m_state.textInputCursor++;
+            }
+        } break;
+        case InputEvent::Type::Backspace: {
+            auto textBeforeCursor = m_state.textInput.substr(0, m_state.textInputCursor);
+            if (m_state.textInputActive && m_state.textInputCursor > 0 && !textBeforeCursor.empty()) {
+                m_state.textInput.erase(m_state.textInput.begin() + m_state.textInputCursor - 1);
+                m_state.textInputCursor--;
+			}
+        } break;
+        case InputEvent::Type::Delete: {
+			auto textAfterCursor = m_state.textInput.substr(m_state.textInputCursor);
+            if (m_state.textInputActive && m_state.textInputCursor < m_state.textInput.size() && !textAfterCursor.empty()) {
+                m_state.textInput.erase(m_state.textInput.begin() + m_state.textInputCursor);
+            }
+        } break;
+        case InputEvent::Type::Left: {
+			if (m_state.textInputActive && m_state.textInputCursor > 0) {
+				m_state.textInputCursor--;
+			}
+		} break;
+        case InputEvent::Type::Right: {
+            if (m_state.textInputActive && m_state.textInputCursor < m_state.textInput.size()) {
+                m_state.textInputCursor++;
+            }
+        } break;
+        case InputEvent::Type::Home: {
+			if (m_state.textInputActive) {
+				m_state.textInputCursor = 0;
+			}
+		} break;
+        case InputEvent::Type::End: {
+			if (m_state.textInputActive) {
+				m_state.textInputCursor = m_state.textInput.size();
+			}
+		} break;
+    }
 }
 
 void TinyGUI::BeginFrame(
@@ -2481,9 +2675,8 @@ Rect TinyGUI::EndFrame() {
     frame.bounds = frameBounds;
     
     // moving logic
-    if (frame.dragging && !frame.fixed) {
-        frame.positionOffset.x += m_state.mouseDelta.x;
-        frame.positionOffset.y += m_state.mouseDelta.y;
+    if (frame.dragging && !frame.fixed && IsDragging()) {
+        frame.positionOffset = GetDragPosition();
     }
 
     SetTargetLayer(m_widgetsLayer);
@@ -2600,8 +2793,6 @@ TinyGUI::Widget& TinyGUI::GetWidget(const std::string& name, Rect bounds, bool b
     for (auto&& [fid, frame] : m_frames) {
         Rect totalBounds = frame.titleBounds.Union(frame.bounds);
 		if (totalBounds.Intersects(bounds) && m_state.frontMostPanelId == fid && m_state.frontMostPanelId != parentFrameId) {
-            //DrawStyle9Patch(GuiMapSprite::Selection, olc::RED, bounds.Expand(2));
-            //DrawStyle9Patch(GuiMapSprite::Selection, olc::GREEN, totalBounds.Expand(2));
 			blockingFrame = &frame;
 			break;
 		}
@@ -2639,6 +2830,12 @@ TinyGUI::Widget& TinyGUI::GetWidget(const std::string& name, Rect bounds, bool b
     }
 
     return widget;
+}
+
+void TinyGUI::PrepareDrag(Vector2i elementPosition) {
+    m_state.dragStart = m_state.mousePos;
+    m_state.dragOffset = { 0, 0 };
+    m_state.dragCorrection = m_state.mousePos - elementPosition;
 }
 
 TinyGUI::Widget& TinyGUI::GetWidgetByName(const std::string& name) {
@@ -2815,6 +3012,23 @@ std::vector<std::string> utils::Split(const std::string& str, const std::initial
 
 size_t utils::GetIDFromName(const std::string& name) {
     return std::hash<std::string>()(name);
+}
+
+uint32_t utils::GetCodepoint(const std::string& text, uint32_t pos, uint32_t& out) {
+    char c1 = text[pos];
+
+    // is high surrogate?
+    if ((c1 & 0xFC00) == 0xD800 && pos + 1 < text.size()) {
+        char c2 = text[pos + 1];
+        // is low surrogate?
+        if ((c2 & 0xFC00) == 0xDC00) {
+            out = uint32_t(c1) << 10 + uint32_t(c2) - 0x35FDC00;
+            return 2;
+		}
+    }
+
+    out = uint32_t(c1);
+    return 1;
 }
 
 #endif
