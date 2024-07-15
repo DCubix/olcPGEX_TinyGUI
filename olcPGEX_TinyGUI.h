@@ -1,6 +1,6 @@
 #pragma once
 
-#ifndef OLC_PGE_APPLICATION // Use OpenGL backend
+#ifndef TINYGUI_PGEX // Use OpenGL backend
 // disable min/max macros
 #define NOMINMAX
 #include "glbind.h"
@@ -8,7 +8,6 @@
 #include "stb_truetype.h"
 #include <iostream>
 #include <fstream>
-#include <array>
 #else // Use PixelGameEngine backend
 #include "olcPixelGameEngine.h"
 #endif
@@ -17,6 +16,8 @@
 #include <functional>
 #include <algorithm>
 #include <vector>
+#include <array>
+#include <tuple>
 #include <string>
 #include <initializer_list>
 #include <map>
@@ -82,6 +83,19 @@ constexpr int FrameTitleHeight = 18;
 struct Color {
     uint8_t r, g, b, a;
 
+#ifdef TINYGUI_PGEX
+    olc::Pixel AsOLC() const { return olc::Pixel(r, g, b, a); }
+#endif
+
+    std::tuple<float, float, float, float> AsFloat() const {
+		return {
+			static_cast<float>(r) / 255.0f,
+			static_cast<float>(g) / 255.0f,
+			static_cast<float>(b) / 255.0f,
+			static_cast<float>(a) / 255.0f
+		};
+	}
+
     static Color FromFloat(float r, float g, float b, float a = 1.0f) {
 		return {
             static_cast<uint8_t>(r * 255),
@@ -103,6 +117,10 @@ struct Vector2 {
 
     Vector2 operator+(const Vector2& other) const { return { x + other.x, y + other.y }; }
     Vector2 operator-(const Vector2& other) const { return { x - other.x, y - other.y }; }
+
+#ifdef TINYGUI_PGEX
+    olc::v2d_generic<T> AsOLC() const { return { x, y }; }
+#endif
 };
 
 using Vector2i = Vector2<int32_t>;
@@ -134,7 +152,7 @@ public:
 
     Vector2ui Size() const { return { m_width, m_height }; }
 
-#ifdef OLC_PGE_APPLICATION
+#ifdef TINYGUI_PGEX
     olc::Sprite* GetSprite() { return m_sprite.get(); }
 	olc::Decal* GetDecal() { return m_decal.get(); }
 #else
@@ -144,7 +162,7 @@ public:
 private:
     uint32_t m_width, m_height;
 
-#ifdef OLC_PGE_APPLICATION
+#ifdef TINYGUI_PGEX
     std::unique_ptr<olc::Sprite> m_sprite;
     std::unique_ptr<olc::Decal> m_decal;
 #else
@@ -164,10 +182,14 @@ public:
     virtual void Render(Shader* shader, Vector2ui screenSize) = 0;
     virtual Vector2i GetTextSize(Font* font, const std::string& text) = 0;
 
+    virtual void DrawPartialQuadUV(const Rect& dest, float* uvs, const Color& color, Texture* texture) = 0;
+    virtual void DrawChar(Font* font, const Vector2f& pos, char c, Color color) = 0;
+    virtual void DrawText(Font* font, const Vector2f& pos, const std::string& text, Color color) = 0;
+
     virtual void SetDrawTarget(size_t index) {}
 };
 
-#ifndef OLC_PGE_APPLICATION
+#ifndef TINYGUI_PGEX
 class Shader {
 public:
     enum class Type {
@@ -204,9 +226,9 @@ public:
     void EnableScissor(const Rect& bounds) override;
     void DisableScissor() override;
 
-    void DrawPartialQuadUV(const Rect& dest, float* uvs, const Color& color, Texture* texture);
-    void DrawChar(Font* font, const Vector2f& pos, char c, Color color);
-    void DrawText(Font* font, const Vector2f& pos, const std::string& text, Color color);
+    void DrawPartialQuadUV(const Rect& dest, float* uvs, const Color& color, Texture* texture) override;
+    void DrawChar(Font* font, const Vector2f& pos, char c, Color color) override;
+    void DrawText(Font* font, const Vector2f& pos, const std::string& text, Color color) override;
 
     Vector2i GetTextSize(Font* font, const std::string& text) override;
 
@@ -279,11 +301,42 @@ private:
     void GetCodepointMetrics(uint32_t cp, int& advance, int& lsb);
     void GetCodepointBox(uint32_t cp, int& x0, int& y0, int& x1, int& y1) const;
 };
+#else
+class PGERendererBackend : public RendererBackend {
+public:
+    PGERendererBackend(olc::PixelGameEngine* pge);
+
+    void DrawQuad(const Rect& bounds, const Color& color, Texture* texture) override;
+    void DrawPartialQuad(const Rect& dest, const Rect& src, const Color& color, Texture* texture) override;
+    void DrawLine(Vector2i a, Vector2i b, const Color& color) override;
+
+    void EnableScissor(const Rect& bounds) override {} // PGE still has no support for this
+    void DisableScissor() override {} // PGE still has no support for this
+    void Render(Shader* shader, Vector2ui screenSize) override {}
+
+    Vector2i GetTextSize(Font* font, const std::string& text) override;
+
+    void DrawPartialQuadUV(const Rect& dest, float* uvs, const Color& color, Texture* texture) override;
+    void DrawChar(Font* font, const Vector2f& pos, char c, Color color) override {}
+    void DrawText(Font* font, const Vector2f& pos, const std::string& text, Color color) override;
+
+    void SetDrawTarget(size_t index) override;
+
+    olc::PixelGameEngine* GetPGE() { return m_pge; }
+private:
+    olc::PixelGameEngine* m_pge;
+};
 #endif
 
 class Renderer {
 public:
-    Renderer();
+    Renderer() = default;
+
+    void Init();
+
+#ifdef TINYGUI_PGEX
+    void SetPGE(olc::PixelGameEngine* pge);
+#endif
 
     void DrawText(const std::string& text, Color color, Rect bounds, uint32_t layer, size_t position = -1);
     void DrawFillRect(Color color, Rect bounds, uint32_t layer, size_t position = -1);
@@ -333,8 +386,8 @@ private:
 
     Texture m_guiTexture;
 
-#ifndef OLC_PGE_APPLICATION
     std::unique_ptr<RendererBackend> m_backend;
+#ifndef TINYGUI_PGEX
     Shader m_shader;
     Vector2ui m_screenSize;
     Font m_font;
@@ -536,7 +589,11 @@ public:
 
     Color baseColor{ Color(95, 134, 176) };
 
-private:
+#ifdef TINYGUI_PGEX
+    void SetPGE(olc::PixelGameEngine* pge) { m_pge = pge; }
+#endif
+
+protected:
 
     Widget& GetWidgetByName(const std::string& name);
 
@@ -756,6 +813,9 @@ private:
     std::vector<Rect> m_rectStack;
 
     Renderer m_renderer{};
+#ifdef TINYGUI_PGEX
+    olc::PixelGameEngine* m_pge{ nullptr };
+#endif
 
     // docking
     std::map<size_t, Rect> m_dockingAreas;
@@ -765,10 +825,25 @@ private:
     void SetTargetLayer(uint32_t layer);
 };
 
+#ifdef TINYGUI_PGEX
+class olcPGEX_TinyGUI : public olc::PGEX, public TinyGUI {
+public:
+    olcPGEX_TinyGUI() : olc::PGEX(true), TinyGUI() {}
+
+    void OnBeforeUserCreate() override;
+    bool OnBeforeUserUpdate(float& fElapsedTime) override;
+    void OnAfterUserUpdate(float fElapsedTime) override;
+
+private:
+    bool m_mouseWasDown{ false }, m_typed{ false };
+    olc::vi2d m_prevMousePos{ 0, 0 };
+};
+#endif
+
 #ifdef TINYGUI_IMPLEMENTATION
 
 void Texture::Load(const std::string& fileName) {
-#ifdef OLC_PGE_APPLICATION
+#ifdef TINYGUI_PGEX
 	m_sprite = std::make_unique<olc::Sprite>(fileName);
 	m_decal = std::make_unique<olc::Decal>(m_sprite.get());
     m_width = m_sprite->width;
@@ -789,10 +864,23 @@ void Texture::Load(const std::string& fileName) {
 }
 
 void Texture::LoadFromMemory(uint8_t* data, uint32_t width, uint32_t height, uint32_t channels) {
-#ifdef OLC_PGE_APPLICATION
+#ifdef TINYGUI_PGEX
     // TODO: Finish this up
 	m_sprite = std::make_unique<olc::Sprite>(width, height);
 	m_decal = std::make_unique<olc::Decal>(m_sprite.get());
+
+    // copy data
+    for (uint32_t y = 0; y < height; y++) {
+        for (uint32_t x = 0; x < width; x++) {
+            uint8_t pixel[4] = { 0, 0, 0, 255 };
+            for (uint32_t c = 0; c < channels; c++) {
+                pixel[c] = data[(y * width + x) * channels + c];
+            }
+            m_sprite->SetPixel(x, y, olc::Pixel(pixel[0], pixel[1], pixel[2], pixel[3]));
+        }
+    }
+    m_decal->Update();
+
 	m_width = width;
 	m_height = height;
 #else
@@ -820,7 +908,7 @@ void Texture::LoadFromMemory(uint8_t* data, uint32_t width, uint32_t height, uin
 #endif
 }
 
-#ifndef OLC_PGE_APPLICATION
+#ifndef TINYGUI_PGEX
 Shader& Shader::AddSource(Type type, const std::string& source) {
     GLuint shader = glCreateShader(static_cast<GLenum>(type));
     const char* src = source.c_str();
@@ -1330,6 +1418,77 @@ void Font::GetCodepointBox(uint32_t cp, int& x0, int& y0, int& x1, int& y1) cons
     x1 *= m_scale;
     y1 *= m_scale;
 }
+#else
+PGERendererBackend::PGERendererBackend(olc::PixelGameEngine* pge) {
+    m_pge = pge;
+}
+
+void PGERendererBackend::DrawQuad(const Rect& bounds, const Color& color, Texture* texture) {
+	if (texture) {
+        auto size = texture->Size();
+		m_pge->DrawPartialDecal(
+            bounds.Position().AsOLC(),
+            bounds.Size().AsOLC(),
+			texture->GetDecal(),
+			olc::vf2d{ 0.0f, 0.0f },
+			size.AsOLC(),
+			color.AsOLC()
+		);
+	}
+	else {
+		m_pge->FillRectDecal(bounds.Position().AsOLC(), bounds.Size().AsOLC(), color.AsOLC());
+	}
+}
+
+void PGERendererBackend::DrawPartialQuad(const Rect& dest, const Rect& src, const Color& color, Texture* texture) {
+    if (!texture) {
+        DrawQuad(dest, color, nullptr);
+        return;
+    }
+
+	auto size = texture->Size();
+	m_pge->DrawPartialDecal(
+		dest.Position().AsOLC(),
+		dest.Size().AsOLC(),
+		texture->GetDecal(),
+        src.Position().AsOLC(),
+        src.Size().AsOLC(),
+        color.AsOLC()
+	);
+}
+
+void PGERendererBackend::DrawLine(Vector2i a, Vector2i b, const Color& color) {
+	m_pge->DrawLine(a.x, a.y, b.x, b.y, color.AsOLC());
+}
+
+Vector2i PGERendererBackend::GetTextSize(Font* font, const std::string& text) {
+    auto [w, h] = m_pge->GetTextSizeProp(text);
+    return { w, h };
+}
+
+void PGERendererBackend::DrawPartialQuadUV(const Rect& dest, float* uvs, const Color& color, Texture* texture) {
+    if (!texture) {
+		DrawQuad(dest, color, nullptr);
+		return;
+	}
+
+	auto size = texture->Size();
+	m_pge->DrawPartialDecal(
+		dest.Position().AsOLC(),
+		dest.Size().AsOLC(),
+		texture->GetDecal(),
+		olc::vf2d{ uvs[0] * size.x, uvs[1] * size.y },
+		olc::vf2d{ uvs[2] * size.x, uvs[3] * size.y },
+		color.AsOLC()
+	);
+}
+void PGERendererBackend::DrawText(Font* font, const Vector2f& pos, const std::string& text, Color color) {
+    m_pge->DrawStringPropDecal(pos.AsOLC(), text, color.AsOLC());
+}
+
+void PGERendererBackend::SetDrawTarget(size_t index) {
+    m_pge->SetDrawTarget(index);
+}
 #endif
 
 void Renderer::AddDrawCommand(DrawCommand cmd, uint32_t layer, size_t position) {
@@ -1342,9 +1501,9 @@ void Renderer::AddDrawCommand(DrawCommand cmd, uint32_t layer, size_t position) 
     }
 }
 
-Renderer::Renderer() {
+void Renderer::Init() {
     LoadGuiTexture();
-#ifndef OLC_PGE_APPLICATION
+#ifndef TINYGUI_PGEX
     m_backend = std::make_unique<BatchedRenderer>();
     m_font.Load("opensans.ttf", 18.0f);
 
@@ -1385,13 +1544,18 @@ Renderer::Renderer() {
 		}
 	)";
 
-	m_shader
+    m_shader
         .AddSource(Shader::Type::Vertex, vert)
         .AddSource(Shader::Type::Fragment, frag)
         .Link();
-
 #endif
 }
+
+#ifdef TINYGUI_PGEX
+inline void Renderer::SetPGE(olc::PixelGameEngine* pge) {
+    m_backend = std::make_unique<PGERendererBackend>(pge);
+}
+#endif
 
 void Renderer::DrawText(const std::string& text, Color color, Rect bounds, uint32_t layer, size_t position) {
     DrawCommand cmd{};
@@ -1571,24 +1735,28 @@ void Renderer::DrawStyleSprite(Rect bounds, Color color, GuiMapSprite sprite) {
 }
 
 Vector2ui Renderer::GetScreenSize() const {
-#ifndef OLC_PGE_APPLICATION
+#ifndef TINYGUI_PGEX
     return m_screenSize;
 #else
-    return { m_pge->ScreenWidth(), m_pge->ScreenHeight() };
+    auto pgeBackend = dynamic_cast<PGERendererBackend*>(m_backend.get());
+    auto pge = pgeBackend->GetPGE();
+    return { uint32_t(pge->ScreenWidth()), uint32_t(pge->ScreenHeight()) };
 #endif
 }
 
 void Renderer::SetScreenSize(Vector2ui size) {
-#ifndef OLC_PGE_APPLICATION
+#ifndef TINYGUI_PGEX
 	m_screenSize = size;
 #endif
 }
 
 Vector2i Renderer::GetTextSize(const std::string& text) {
+#ifndef TINYGUI_PGEX
     return m_backend->GetTextSize(&m_font, text);
+#else
+    return m_backend->GetTextSize(nullptr, text);
+#endif
 }
-
-
 
 
 void Renderer::RenderAll() {
@@ -1603,16 +1771,16 @@ void Renderer::RenderAll() {
 
         switch (cmd.type) {
             case DrawCommandType::Text: {
-#ifdef OLC_PGE_APPLICATION
-                m_pge->DrawStringPropDecal(
+#ifndef TINYGUI_PGEX
+                m_backend->DrawText(
+                    &m_font,
                     { float(cmd.bounds.x), float(cmd.bounds.y) },
                     cmd.text,
                     cmd.color
                 );
 #else
-                BatchedRenderer* ren = dynamic_cast<BatchedRenderer*>(m_backend.get());
-                ren->DrawText(
-                    &m_font,
+                m_backend->DrawText(
+                    nullptr,
                     { float(cmd.bounds.x), float(cmd.bounds.y) },
                     cmd.text,
                     cmd.color
@@ -1664,8 +1832,10 @@ void Renderer::RenderAll() {
 	}
 	m_drawCommands.clear();
 
+#ifndef TINYGUI_PGEX
     m_shader.Use();
     m_backend->Render(&m_shader, GetScreenSize());
+#endif
 }
 
 void Renderer::LoadGuiTexture() {
@@ -2347,15 +2517,20 @@ void TinyGUI::ShowPopup(const std::string& name) {
 }
 
 void TinyGUI::OnCreate() {
+    m_renderer.Init();
+#ifdef TINYGUI_PGEX
+    m_renderer.SetPGE(m_pge);
+#endif
+
     auto screenSize = m_renderer.GetScreenSize();
     m_rectStack.push_back(Rect{ 0, 0, int(screenSize.x), int(screenSize.y) });
 
-#ifdef OLC_PGE_APPLICATION
-    m_panelsLayer = pge->CreateLayer();
-    pge->EnableLayer(m_panelsLayer, true);
+#ifdef TINYGUI_PGEX
+    m_panelsLayer = m_pge->CreateLayer();
+    m_pge->EnableLayer(m_panelsLayer, true);
 
-    m_widgetsLayer = pge->CreateLayer();
-    pge->EnableLayer(m_widgetsLayer, true);
+    m_widgetsLayer = m_pge->CreateLayer();
+    m_pge->EnableLayer(m_widgetsLayer, true);
 #endif
 
     SetTargetLayer(m_widgetsLayer);
@@ -2374,17 +2549,17 @@ bool TinyGUI::OnUpdate(float deltaTime) {
         widget.released = false;
 	}
 
-#ifdef OLC_PGE_APPLICATION
-    pge->SetPixelMode(Color::ALPHA);
+#ifdef TINYGUI_PGEX
+    m_pge->SetPixelMode(olc::Pixel::Mode::ALPHA);
 
-    pge->SetDrawTarget(nullptr);
-    pge->Clear(olc::BLANK);
+    m_pge->SetDrawTarget(nullptr);
+    m_pge->Clear(olc::BLANK);
 
-    pge->SetDrawTarget(m_panelsLayer);
-    pge->Clear(olc::BLANK);
+    m_pge->SetDrawTarget(m_panelsLayer);
+    m_pge->Clear(olc::BLANK);
 
-    pge->SetDrawTarget(m_widgetsLayer);
-    pge->Clear(olc::BLANK);
+    m_pge->SetDrawTarget(m_widgetsLayer);
+    m_pge->Clear(olc::BLANK);
 
     SetTargetLayer(m_widgetsLayer);
 #endif
@@ -2905,6 +3080,10 @@ void TinyGUI::DrawPopups() {
     const int paddingX = 8;
     const int paddingY = 5;
 
+#ifdef TINYGUI_PGEX
+    m_pge->SetDrawTarget(nullptr);
+#endif
+
     for (auto&& [wid, popup] : m_popups) {
         if (m_state.openPopup != wid) continue;
 
@@ -2926,15 +3105,17 @@ void TinyGUI::DrawPopups() {
         Rect bounds{ popup.position.x, popup.position.y, width + paddingX * 2, height + paddingY * 2 };
 
         m_renderer.DrawStyle9Patch(
-            Rect{ bounds.x + 3, bounds.y + 3, bounds.width, bounds.height },
-            Color{ 255, 255, 255, 255 },
             GuiMapSprite::Shadow,
+            Color{ 255, 255, 255, 255 },
+            Rect{ bounds.x + 3, bounds.y + 3, bounds.width, bounds.height },
+            0,
             0xFF
         );
         m_renderer.DrawStyle9Patch(
-            bounds,
-            Color{ 255, 255, 255, 255 },
             GuiMapSprite::Panel,
+            Color{ 255, 255, 255, 255 },
+            bounds,
+            0,
             0xFF
         );
 
@@ -2982,6 +3163,93 @@ void TinyGUI::DrawPopups() {
         }
     }
 }
+
+#ifdef TINYGUI_PGEX
+void olcPGEX_TinyGUI::OnBeforeUserCreate() {
+    SetPGE(this->pge);
+    OnCreate();
+}
+
+bool olcPGEX_TinyGUI::OnBeforeUserUpdate(float& fElapsedTime) {
+    // input handling
+    
+    if (pge->GetMouse(0).bHeld) {
+        InputEvent ev;
+		ev.type = InputEvent::Type::MouseDown;
+		ev.mousePos = { pge->GetMouseX(), pge->GetMouseY() };
+		OnEvent(ev);
+        m_mouseWasDown = true;
+    }
+    else {
+        if (m_mouseWasDown) {
+            InputEvent ev;
+			ev.type = InputEvent::Type::MouseUp;
+			ev.mousePos = { pge->GetMouseX(), pge->GetMouseY() };
+			OnEvent(ev);
+            m_mouseWasDown = false;
+        }
+    }
+    
+    auto mousePos = pge->GetMousePos();
+    if (mousePos - m_prevMousePos != olc::vi2d{ 0, 0 }) {
+        InputEvent ev;
+        ev.type = InputEvent::Type::MouseMove;
+        ev.mousePos = { pge->GetMouseX(), pge->GetMouseY() };
+        OnEvent(ev);
+    }
+
+    bool textEdited = false;
+    if (pge->GetKey(olc::Key::BACK).bPressed) {
+		InputEvent ev;
+		ev.type = InputEvent::Type::Backspace;
+		OnEvent(ev);
+        textEdited = true;
+	} else if (pge->GetKey(olc::Key::DEL).bPressed) {
+        InputEvent ev;
+        ev.type = InputEvent::Type::Delete;
+        OnEvent(ev);
+        textEdited = true;
+    } else if (pge->GetKey(olc::Key::LEFT).bPressed) {
+        InputEvent ev;
+		ev.type = InputEvent::Type::Left;
+		OnEvent(ev);
+        textEdited = true;
+	} else if (pge->GetKey(olc::Key::RIGHT).bPressed) {
+		InputEvent ev;
+		ev.type = InputEvent::Type::Right;
+		OnEvent(ev);
+        textEdited = true;
+	} else if (pge->GetKey(olc::Key::HOME).bPressed) {
+		InputEvent ev;
+		ev.type = InputEvent::Type::Home;
+		OnEvent(ev);
+        textEdited = true;
+	} else if (pge->GetKey(olc::Key::END).bPressed) {
+		InputEvent ev;
+		ev.type = InputEvent::Type::End;
+		OnEvent(ev);
+        textEdited = true;
+	}
+
+    // text input
+    if (m_state.textInputActive && !pge->IsTextEntryEnabled()) {
+        pge->TextEntryEnable(true, m_state.textInput);
+    }
+    else if (!m_state.textInputActive && pge->IsTextEntryEnabled()) {
+		pge->TextEntryEnable(false);
+	}
+
+    m_state.textInputCursor = pge->TextEntryGetCursor();
+    m_state.textInput = pge->TextEntryGetString();
+
+    m_prevMousePos = mousePos;
+    return OnUpdate(fElapsedTime);
+}
+
+void olcPGEX_TinyGUI::OnAfterUserUpdate(float fElapsedTime) {
+    OnFinalize(fElapsedTime);
+}
+#endif
 
 float utils::Luma(const Color& color) {
     float r = float(color.r) / 255.0f;

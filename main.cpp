@@ -1,15 +1,17 @@
 //#define OLC_PGE_APPLICATION
-//#define OLC_GFX_OPENGL33
 //#include "olcPixelGameEngine.h"
 
 #define TINYGUI_IMPLEMENTATION
+//#define TINYGUI_PGEX
 #include "olcPGEX_TinyGUI.h"
 
+#ifndef TINYGUI_PGEX
 #define SMOL_FRAME_IMPLEMENTATION
 #include "smol_frame.h"
 
 #define SMOL_UTILS_IMPLEMENTATION
 #include "smol_utils.h"
+#endif
 
 const std::string loremIpsum = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nullam nec purus ac libero ultricies ultricies. Sed nec nunc nec libero ultricies ultricies. Nullam nec purus ac libero ultricies ultricies. Nullam nec purus ac libero test ultricies.";
 
@@ -17,113 +19,111 @@ class AppAdapter {
 public:
 
 	bool OnUserCreate() {
-		gui.baseColor = Color{ 255, 255, 255, 255 };
+		gui->baseColor = Color{ 255, 255, 255, 255 };
 
 		return true;
 	}
 
 	bool OnUserUpdate(float fElapsedTime) {
-		// TODO: Clear(gui.PixelBrightness(gui.baseColor, 0.8f));
+		gui->AddDockingAreaRight("toolbox", 200);
 
-		gui.AddDockingAreaRight("toolbox", 200);
-
-		gui.PushRect(gui.PeekRect().Expand(-5));
-		gui.PushRect(gui.RectCutLeft(120));
+		gui->PushRect(gui->PeekRect().Expand(-5));
+		gui->PushRect(gui->RectCutLeft(120));
 
 		// Button
-		if (gui.Button("btn1", gui.RectCutTop(22), "Button 1")) {
-			gui.ShowPopup("popup1");
+		if (gui->Button("btn1", gui->RectCutTop(22), "Button 1")) {
+			gui->ShowPopup("popup1");
 		}
 
 		// Toggle
 		static bool tgl1 = false;
-		if (gui.Toggle("tgl1", gui.RectCutTop(22), "Toggle 1", tgl1)) {
+		if (gui->Toggle("tgl1", gui->RectCutTop(22), "Toggle 1", tgl1)) {
 
 		}
 
-		gui.PopRect();
+		gui->PopRect();
 
-		gui.RectCutLeft(10);
+		gui->RectCutLeft(10);
 
-		gui.PushRect(gui.RectCutLeft(140));
+		gui->PushRect(gui->RectCutLeft(140));
 
 		// Slider
 		static float sld1 = 0.0f;
-		gui.SliderF("sld1", gui.RectCutTop(22), sld1, 0.0f, 1.0f, 0.01f);
-		gui.PopRect();
+		gui->SliderF("sld1", gui->RectCutTop(22), sld1, 0.0f, 1.0f, 0.01f);
+		gui->PopRect();
 
-		gui.RectCutLeft(10);
+		gui->RectCutLeft(10);
 
 		// Spinner + EditBox
 		static int spn1 = 0;
-		gui.PushRect(gui.RectCutLeft(140));
+		gui->PushRect(gui->RectCutLeft(140));
 
-		gui.Spinner("spn1", gui.RectCutTop(22), spn1, 0, 100, 1);
+		gui->Spinner("spn1", gui->RectCutTop(22), spn1, 0, 100, 1);
 
-		gui.RectCutTop(5);
+		gui->RectCutTop(5);
 
 		static std::string editValue1 = "Edit me!";
-		gui.EditBox("edt1", gui.RectCutTop(22), editValue1);
+		gui->EditBox("edt1", gui->RectCutTop(22), editValue1);
 
-		gui.PopRect();
+		gui->PopRect();
 
-		gui.PopRect();
+		gui->PopRect();
 
 		std::string tabs[] = { "Tab 1", "Tab 2", "Tab 3", "Tab Long 5", "Tab Long 6" };
 
 		// Frame
-		gui.BeginFrame("frame1", "Frame Test", { 20, 120 }, 200, true);
-		gui.TabBar("tab1", gui.RectCutTop(25), tabs, 5, selTab);
+		gui->BeginFrame("frame1", "Frame Test", { 20, 120 }, 200, true);
+		gui->TabBar("tab1", gui->RectCutTop(25), tabs, 5, selTab);
 
-		gui.RectCutTop(3);
+		gui->RectCutTop(3);
 
-		if (selTab == 0) gui.Button("btn2", gui.RectCutTop(22), "Button 2");
-		else if (selTab == 1) gui.Toggle("tgl2", gui.RectCutTop(22), "Toggle 2", tgl1);
-		else if (selTab == 2) gui.SliderF("sld2", gui.RectCutTop(22), sld1, 0.0f, 1.0f, 0.01f);
+		if (selTab == 0) gui->Button("btn2", gui->RectCutTop(22), "Button 2");
+		else if (selTab == 1) gui->Toggle("tgl2", gui->RectCutTop(22), "Toggle 2", tgl1);
+		else if (selTab == 2) gui->SliderF("sld2", gui->RectCutTop(22), sld1, 0.0f, 1.0f, 0.01f);
 
-		gui.EndFrame();
+		gui->EndFrame();
 
-		gui.BeginFrame("frame2", "Label Test", { 250, 120 }, 250);
-		gui.Label(gui.RectCutTop(150), loremIpsum, AlignCenter, std::nullopt, true);
-		gui.EndFrame();
+		gui->BeginFrame("frame2", "Label Test", { 250, 120 }, 250);
+		gui->Label(gui->RectCutTop(150), loremIpsum, AlignCenter, std::nullopt, true);
+		gui->EndFrame();
 
-		gui.BeginFrame("guicolor", "GUI Base Color", { 12, int(gui.GetRenderer().GetScreenSize().y) - 150}, 240, true);
+		gui->BeginFrame("guicolor", "GUI Base Color", { 12, int(gui->GetRenderer().GetScreenSize().y) - 150}, 240, true);
 
-		gui.PushRect(gui.RectCutTop(22));
-		if (gui.Spinner("s_col_red", gui.RectCutRight(80), guiRGB[0], 0, 255, 1, "R:%d")) {
-			gui.baseColor.r = uint8_t(guiRGB[0] & 0xFF);
+		gui->PushRect(gui->RectCutTop(22));
+		if (gui->Spinner("s_col_red", gui->RectCutRight(80), guiRGB[0], 0, 255, 1, "R:%d")) {
+			gui->baseColor.r = uint8_t(guiRGB[0] & 0xFF);
 		}
-		gui.RectCutRight(3);
-		if (gui.Slider("col_red", gui.PeekRect(), guiRGB[0], 0, 255, 1, Color{ 255, 0, 0, 255 })) {
-			gui.baseColor.r = uint8_t(guiRGB[0] & 0xFF);
+		gui->RectCutRight(3);
+		if (gui->Slider("col_red", gui->PeekRect(), guiRGB[0], 0, 255, 1, Color{ 255, 0, 0, 255 })) {
+			gui->baseColor.r = uint8_t(guiRGB[0] & 0xFF);
 		}
-		gui.PopRect();
+		gui->PopRect();
 
-		gui.RectCutTop(5);
+		gui->RectCutTop(5);
 
-		gui.PushRect(gui.RectCutTop(22));
-		if (gui.Spinner("s_col_green", gui.RectCutRight(80), guiRGB[1], 0, 255, 1, "G:%d")) {
-			gui.baseColor.g = uint8_t(guiRGB[1] & 0xFF);
+		gui->PushRect(gui->RectCutTop(22));
+		if (gui->Spinner("s_col_green", gui->RectCutRight(80), guiRGB[1], 0, 255, 1, "G:%d")) {
+			gui->baseColor.g = uint8_t(guiRGB[1] & 0xFF);
 		}
-		gui.RectCutRight(3);
-		if (gui.Slider("col_green", gui.PeekRect(), guiRGB[1], 0, 255, 1, Color{ 0, 255, 0, 255 })) {
-			gui.baseColor.g = uint8_t(guiRGB[1] & 0xFF);
+		gui->RectCutRight(3);
+		if (gui->Slider("col_green", gui->PeekRect(), guiRGB[1], 0, 255, 1, Color{ 0, 255, 0, 255 })) {
+			gui->baseColor.g = uint8_t(guiRGB[1] & 0xFF);
 		}
-		gui.PopRect();
+		gui->PopRect();
 
-		gui.RectCutTop(5);
+		gui->RectCutTop(5);
 
-		gui.PushRect(gui.RectCutTop(22));
-		if (gui.Spinner("s_col_blue", gui.RectCutRight(80), guiRGB[2], 0, 255, 1, "B:%d")) {
-			gui.baseColor.b = uint8_t(guiRGB[2] & 0xFF);
+		gui->PushRect(gui->RectCutTop(22));
+		if (gui->Spinner("s_col_blue", gui->RectCutRight(80), guiRGB[2], 0, 255, 1, "B:%d")) {
+			gui->baseColor.b = uint8_t(guiRGB[2] & 0xFF);
 		}
-		gui.RectCutRight(3);
-		if (gui.Slider("col_blue", gui.PeekRect(), guiRGB[2], 0, 255, 1, Color{ 0, 0, 255, 255 })) {
-			gui.baseColor.b = uint8_t(guiRGB[2] & 0xFF);
+		gui->RectCutRight(3);
+		if (gui->Slider("col_blue", gui->PeekRect(), guiRGB[2], 0, 255, 1, Color{ 0, 0, 255, 255 })) {
+			gui->baseColor.b = uint8_t(guiRGB[2] & 0xFF);
 		}
-		gui.PopRect();
+		gui->PopRect();
 
-		gui.EndFrame();
+		gui->EndFrame();
 
 		std::string menuItems[] = {
 			"Menu Item 1",
@@ -133,17 +133,17 @@ public:
 			"---",
 			"Menu Item 5"
 		};
-		gui.MakePopup("popup1", menuItems, 6);
+		gui->MakePopup("popup1", menuItems, 6);
 
 		return true;
 	}
 
-	TinyGUI gui;
+	TinyGUI* gui;
 	size_t selTab{ 0 };
 	int guiRGB[3]{ 255, 255, 255 };
 };
 
-#if 0
+#ifdef TINYGUI_PGEX
 class Example : public olc::PixelGameEngine
 {
 public:
@@ -157,21 +157,24 @@ public:
 	bool OnUserCreate() override
 	{
 		app = std::make_unique<AppAdapter>();
+		app->gui = &gui;
 		return app->OnUserCreate();
 	}
 
 	bool OnUserUpdate(float fElapsedTime) override
 	{
+		Clear(app->gui->PixelBrightness(app->gui->baseColor, 0.6f).AsOLC());
 		return app->OnUserUpdate(fElapsedTime);
 	}
 
 	std::unique_ptr<AppAdapter> app;
+	olcPGEX_TinyGUI gui;
 };
 
 int main()
 {
 	Example demo;
-	if (demo.Construct(800, 600, 1, 1))
+	if (demo.Construct(1280, 720, 1, 1))
 		demo.Start();
 	return 0;
 }
@@ -192,10 +195,12 @@ int main(int argc, char** argv) {
 	glViewport(0, 0, conf.width, conf.height);
 
 	AppAdapter app{};
+	std::unique_ptr<TinyGUI> gui = std::make_unique<TinyGUI>();
 
-	app.gui.GetRenderer().SetScreenSize({ uint32_t(conf.width), uint32_t(conf.height) });
+	app.gui = gui.get();
+	app.gui->GetRenderer().SetScreenSize({ uint32_t(conf.width), uint32_t(conf.height) });
 
-	app.gui.OnCreate();
+	app.gui->OnCreate();
 	app.OnUserCreate();
 
 	constexpr double timeStep = 1.0 / 60.0;
@@ -228,7 +233,7 @@ int main(int argc, char** argv) {
 					ie.type = InputEvent::Type::MouseMove;
 					ie.mousePos.x = ev.mouse.x;
 					ie.mousePos.y = ev.mouse.y;
-					app.gui.OnEvent(ie);
+					app.gui->OnEvent(ie);
 				} break;
 				case SMOL_FRAME_EVENT_MOUSE_BUTTON_DOWN: {
 					if (ev.mouse.button == 1) {
@@ -237,7 +242,7 @@ int main(int argc, char** argv) {
 						ie.mouseState = true;
 						ie.mousePos.x = ev.mouse.x;
 						ie.mousePos.y = ev.mouse.y;
-						app.gui.OnEvent(ie);
+						app.gui->OnEvent(ie);
 					}
 				} break;
 				case SMOL_FRAME_EVENT_MOUSE_BUTTON_UP: {
@@ -245,27 +250,27 @@ int main(int argc, char** argv) {
 						InputEvent ie{};
 						ie.type = InputEvent::Type::MouseUp;
 						ie.mouseState = false;
-						app.gui.OnEvent(ie);
+						app.gui->OnEvent(ie);
 					}
 				} break;
 				case SMOL_FRAME_EVENT_TEXT_INPUT: {
 					InputEvent ie{};
 					ie.type = InputEvent::Type::TextInput;
 					ie.keyChar = ev.input.codepoint;
-					app.gui.OnEvent(ie);
+					app.gui->OnEvent(ie);
 				} break;
 				case SMOL_FRAME_EVENT_KEY_DOWN: {
 					keysPressed[ev.key.code] = true;
 				} break;
 			}
 
-			if (keysPressed[SMOLK_LEFT]) app.gui.OnEvent({ InputEvent::Type::Left });
-			if (keysPressed[SMOLK_RIGHT]) app.gui.OnEvent({ InputEvent::Type::Right });
-			if (keysPressed[SMOLK_HOME]) app.gui.OnEvent({ InputEvent::Type::Home });
-			if (keysPressed[SMOLK_END]) app.gui.OnEvent({ InputEvent::Type::End });
-			if (keysPressed[SMOLK_BACKSPACE]) app.gui.OnEvent({ InputEvent::Type::Backspace });
-			if (keysPressed[SMOLK_DELETE]) app.gui.OnEvent({ InputEvent::Type::Delete });
-			if (keysPressed[SMOLK_RETURN]) app.gui.OnEvent({ InputEvent::Type::Return });
+			if (keysPressed[SMOLK_LEFT]) app.gui->OnEvent({ InputEvent::Type::Left });
+			if (keysPressed[SMOLK_RIGHT]) app.gui->OnEvent({ InputEvent::Type::Right });
+			if (keysPressed[SMOLK_HOME]) app.gui->OnEvent({ InputEvent::Type::Home });
+			if (keysPressed[SMOLK_END]) app.gui->OnEvent({ InputEvent::Type::End });
+			if (keysPressed[SMOLK_BACKSPACE]) app.gui->OnEvent({ InputEvent::Type::Backspace });
+			if (keysPressed[SMOLK_DELETE]) app.gui->OnEvent({ InputEvent::Type::Delete });
+			if (keysPressed[SMOLK_RETURN]) app.gui->OnEvent({ InputEvent::Type::Return });
 		}
 
 		while (accumulator >= timeStep) {
@@ -274,12 +279,13 @@ int main(int argc, char** argv) {
 		}
 
 		if (canRender) {
-			glClearColor(0.0f, 0.1f, 0.3f, 1.0f);
+			auto [r, g, b, a] = app.gui->PixelBrightness(app.gui->baseColor, 0.6f).AsFloat();
+			glClearColor(r, g, b, a);
 			glClear(GL_COLOR_BUFFER_BIT);
 
-			app.gui.OnUpdate(timeStep);
+			app.gui->OnUpdate(timeStep);
 			app.OnUserUpdate(timeStep);
-			app.gui.OnFinalize(timeStep);
+			app.gui->OnFinalize(timeStep);
 
 			smol_frame_gl_swap_buffers(frame);
 		}
